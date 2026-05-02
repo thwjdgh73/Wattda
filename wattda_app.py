@@ -11,6 +11,19 @@ import matplotlib.font_manager as fm
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except Exception:
+    REQUESTS_AVAILABLE = False
+
+try:
+    import folium
+    from streamlit_folium import st_folium
+    FOLIUM_AVAILABLE = True
+except Exception:
+    FOLIUM_AVAILABLE = False
+
+try:
     from reportlab.lib.pagesizes import A4
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -219,6 +232,121 @@ st.markdown(
         color: #111827;
         white-space: normal;
         word-break: keep-all;
+    }
+
+
+    .w-app-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        padding: 24px 28px;
+        border-radius: 26px;
+        background:
+            radial-gradient(circle at 18% 20%, rgba(96,165,250,0.22), transparent 34%),
+            linear-gradient(135deg, #0F172A 0%, #111827 50%, #1E293B 100%);
+        color: white;
+        box-shadow: 0 14px 34px rgba(15,23,42,0.16);
+        margin-bottom: 18px;
+    }
+
+    .w-app-header h1 {
+        margin: 2px 0 6px 0;
+        font-size: 38px;
+        line-height: 1.1;
+        letter-spacing: -0.04em;
+    }
+
+    .w-app-header p {
+        margin: 0;
+        color: rgba(255,255,255,0.82);
+        font-size: 15px;
+        line-height: 1.6;
+    }
+
+    .w-app-kicker {
+        font-size: 12px;
+        font-weight: 800;
+        color: #BFDBFE;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+    }
+
+    .w-app-status {
+        white-space: nowrap;
+        border: 1px solid rgba(255,255,255,0.22);
+        background: rgba(255,255,255,0.12);
+        border-radius: 999px;
+        padding: 8px 12px;
+        color: rgba(255,255,255,0.88);
+        font-size: 13px;
+        font-weight: 800;
+    }
+
+    .w-stepbar {
+        display: flex;
+        gap: 10px;
+        margin: 8px 0 22px 0;
+    }
+
+    .w-step, .w-step-active {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        border-radius: 999px;
+        padding: 10px 14px;
+        border: 1px solid #E5E7EB;
+        background: #FFFFFF;
+        color: #64748B;
+        font-weight: 800;
+        font-size: 14px;
+    }
+
+    .w-step span, .w-step-active span {
+        display: inline-grid;
+        place-items: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 999px;
+        background: #E5E7EB;
+        color: #334155;
+        font-size: 13px;
+    }
+
+    .w-step-active {
+        border-color: #2563EB;
+        background: #EFF6FF;
+        color: #1D4ED8;
+    }
+
+    .w-step-active span {
+        background: #2563EB;
+        color: #FFFFFF;
+    }
+
+    .w-action-card {
+        border: 1px solid #E5E7EB;
+        border-radius: 24px;
+        padding: 22px;
+        background: #FFFFFF;
+        box-shadow: 0 12px 28px rgba(15,23,42,0.06);
+        min-height: 122px;
+        margin-bottom: 12px;
+    }
+
+    .w-action-title {
+        font-size: 21px;
+        font-weight: 900;
+        letter-spacing: -0.03em;
+        color: #0F172A;
+        margin-bottom: 8px;
+    }
+
+    .w-action-desc {
+        color: #64748B;
+        font-size: 15px;
+        line-height: 1.6;
     }
 
     </style>
@@ -633,6 +761,232 @@ def render_data_quality_box(result):
 
     return dq
 
+
+
+# ============================================================
+# Korea map location picker and real-time weather helpers
+# ============================================================
+
+KOREA_BOUNDS = {
+    "min_lat": 33.0,
+    "max_lat": 39.5,
+    "min_lon": 124.0,
+    "max_lon": 132.0,
+}
+
+KOREA_CITY_CENTERS = {
+    "서울": (37.5665, 126.9780),
+    "부산": (35.1796, 129.0756),
+    "대구": (35.8714, 128.6014),
+    "인천": (37.4563, 126.7052),
+    "광주": (35.1595, 126.8526),
+    "대전": (36.3504, 127.3845),
+    "울산": (35.5384, 129.3114),
+    "세종": (36.4800, 127.2890),
+    "수원": (37.2636, 127.0286),
+    "성남": (37.4200, 127.1265),
+    "고양": (37.6584, 126.8320),
+    "용인": (37.2411, 127.1776),
+    "청주": (36.6424, 127.4890),
+    "천안": (36.8151, 127.1139),
+    "전주": (35.8242, 127.1480),
+    "포항": (36.0190, 129.3435),
+    "창원": (35.2270, 128.6811),
+    "제주": (33.4996, 126.5312),
+}
+
+
+def clamp_korea_location(lat, lon, fallback_city="서울"):
+    fallback_lat, fallback_lon = KOREA_CITY_CENTERS.get(fallback_city, KOREA_CITY_CENTERS["서울"])
+    try:
+        lat = float(lat)
+        lon = float(lon)
+    except Exception:
+        return fallback_lat, fallback_lon
+
+    if not (KOREA_BOUNDS["min_lat"] <= lat <= KOREA_BOUNDS["max_lat"]):
+        lat = fallback_lat
+    if not (KOREA_BOUNDS["min_lon"] <= lon <= KOREA_BOUNDS["max_lon"]):
+        lon = fallback_lon
+
+    return lat, lon
+
+
+def render_korea_city_location_picker(info):
+    """
+    한국 지도에서 건물 위치를 클릭해 위도와 경도를 선택합니다.
+    folium 또는 streamlit-folium이 설치되어 있지 않으면 도시 중심 좌표 선택 방식으로 대체됩니다.
+    """
+    st.markdown("#### 지도에서 건물 위치 선택")
+    st.caption("도시를 먼저 선택한 뒤, 지도에서 건물 위치를 클릭하세요. 선택 좌표는 실시간 기상정보 조회에 사용됩니다.")
+
+    city_names = list(KOREA_CITY_CENTERS.keys())
+    default_city = info.get("지도기준도시", "서울")
+    if default_city not in city_names:
+        default_city = "서울"
+
+    selected_city = st.selectbox(
+        "지도 기준 도시",
+        city_names,
+        index=city_names.index(default_city),
+        help="지도 시작 위치를 정하는 기준 도시입니다.",
+    )
+
+    center_lat, center_lon = KOREA_CITY_CENTERS[selected_city]
+    current_lat, current_lon = clamp_korea_location(
+        info.get("위도", center_lat),
+        info.get("경도", center_lon),
+        selected_city,
+    )
+
+    if not FOLIUM_AVAILABLE:
+        st.warning(
+            "지도 선택 기능을 사용하려면 requirements.txt에 folium과 streamlit-folium을 추가해야 합니다. "
+            "현재는 선택한 도시 중심 좌표를 사용합니다."
+        )
+        loc_cols = st.columns(2)
+        loc_cols[0].metric("선택 위도", f"{center_lat:.5f}")
+        loc_cols[1].metric("선택 경도", f"{center_lon:.5f}")
+        return selected_city, center_lat, center_lon
+
+    m = folium.Map(
+        location=[center_lat, center_lon],
+        zoom_start=12,
+        tiles="CartoDB positron",
+        max_bounds=True,
+        min_lat=KOREA_BOUNDS["min_lat"],
+        max_lat=KOREA_BOUNDS["max_lat"],
+        min_lon=KOREA_BOUNDS["min_lon"],
+        max_lon=KOREA_BOUNDS["max_lon"],
+    )
+
+    folium.Marker(
+        location=[current_lat, current_lon],
+        tooltip="현재 선택 위치",
+        popup=f"현재 선택 위치: {current_lat:.5f}, {current_lon:.5f}",
+        icon=folium.Icon(color="blue", icon="home"),
+    ).add_to(m)
+
+    map_data = st_folium(
+        m,
+        height=430,
+        width=None,
+        returned_objects=["last_clicked"],
+        key=f"korea_location_picker_{selected_city}",
+    )
+
+    selected_lat = current_lat
+    selected_lon = current_lon
+
+    if map_data and map_data.get("last_clicked"):
+        clicked_lat = float(map_data["last_clicked"]["lat"])
+        clicked_lon = float(map_data["last_clicked"]["lng"])
+
+        if (
+            KOREA_BOUNDS["min_lat"] <= clicked_lat <= KOREA_BOUNDS["max_lat"]
+            and KOREA_BOUNDS["min_lon"] <= clicked_lon <= KOREA_BOUNDS["max_lon"]
+        ):
+            selected_lat = clicked_lat
+            selected_lon = clicked_lon
+        else:
+            st.warning("한국 영역 안의 위치를 선택해 주세요.")
+
+    loc_cols = st.columns(2)
+    loc_cols[0].metric("선택 위도", f"{selected_lat:.5f}")
+    loc_cols[1].metric("선택 경도", f"{selected_lon:.5f}")
+
+    return selected_city, selected_lat, selected_lon
+
+
+def get_openweather_api_key():
+    try:
+        return st.secrets["OPENWEATHER_API_KEY"]
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=600)
+def fetch_current_weather(lat, lon, api_key):
+    """
+    OpenWeather Current Weather API를 사용해 현재 기상정보를 가져옵니다.
+    API key가 없거나 requests가 설치되어 있지 않으면 오류 메시지를 반환합니다.
+    """
+    if not REQUESTS_AVAILABLE:
+        return None, "requests 라이브러리가 설치되어 있지 않습니다. requirements.txt에 requests를 추가해 주세요."
+
+    if not api_key:
+        return None, "OpenWeather API key가 설정되지 않았습니다. Streamlit secrets에 OPENWEATHER_API_KEY를 추가해 주세요."
+
+    url = "https://api.openweathermap.org/data/2.5/weather"
+    params = {
+        "lat": float(lat),
+        "lon": float(lon),
+        "appid": api_key,
+        "units": "metric",
+        "lang": "kr",
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=8)
+        if response.status_code != 200:
+            return None, f"날씨 API 호출 실패: HTTP {response.status_code}"
+
+        data = response.json()
+        weather = {
+            "temperature": data.get("main", {}).get("temp"),
+            "feels_like": data.get("main", {}).get("feels_like"),
+            "humidity": data.get("main", {}).get("humidity"),
+            "pressure": data.get("main", {}).get("pressure"),
+            "wind_speed": data.get("wind", {}).get("speed"),
+            "clouds": data.get("clouds", {}).get("all"),
+            "description": data.get("weather", [{}])[0].get("description"),
+            "city": data.get("name"),
+        }
+        return weather, None
+    except Exception as e:
+        return None, f"날씨 데이터 처리 중 오류: {e}"
+
+
+def render_current_weather_box(info):
+    st.markdown("### 실시간 외기 조건")
+
+    lat, lon = clamp_korea_location(
+        info.get("위도", 37.5665),
+        info.get("경도", 126.9780),
+        info.get("지도기준도시", "서울"),
+    )
+
+    api_key = get_openweather_api_key()
+    weather, weather_error = fetch_current_weather(lat, lon, api_key)
+
+    if weather_error:
+        st.warning(weather_error)
+        st.caption("API key를 설정하기 전까지는 CSV의 실외온도 컬럼 또는 샘플 데이터 기준으로 진단이 진행됩니다.")
+        return None
+
+    try:
+        w1, w2, w3, w4 = st.columns(4)
+        w1.metric("현재 외기온도", f"{weather['temperature']:.1f}°C")
+        w2.metric("체감온도", f"{weather['feels_like']:.1f}°C")
+        w3.metric("상대습도", f"{weather['humidity']}%")
+        w4.metric("풍속", f"{weather['wind_speed']:.1f} m/s")
+
+        st.caption(
+            f"날씨 상태: {weather['description']} | 관측 지역: {weather['city']} | "
+            f"선택 좌표: {lat:.5f}, {lon:.5f} | 10분 캐시 적용"
+        )
+
+        if weather["temperature"] is not None:
+            if float(weather["temperature"]) >= 30:
+                st.warning("현재 외기온도가 높습니다. 오늘의 피크 전력은 냉방부하와 관련될 가능성이 있으므로 14~17시 사용량을 함께 확인하세요.")
+            elif float(weather["temperature"]) <= 5:
+                st.info("현재 외기온도가 낮습니다. 난방 또는 기저부하 관련 전력 사용 패턴을 함께 확인하는 것이 좋습니다.")
+            else:
+                st.info("현재 외기온도는 중간 범위입니다. 피크 전력은 냉방보다 운영시간, 조명, 설비 동시가동의 영향일 수 있습니다.")
+    except Exception:
+        st.warning("기상정보 일부 값이 누락되어 표시하지 못했습니다.")
+
+    return weather
 
 
 # ============================================================
@@ -1487,6 +1841,9 @@ default_info = {
     "건물명": "Wattda 샘플 학원 A",
     "건물용도": "학원",
     "지역": "서울 강남구",
+    "지도기준도시": "서울",
+    "위도": 37.5665,
+    "경도": 126.9780,
     "연면적": 1200,
     "층수": 5,
     "운영요일": ["월", "화", "수", "목", "금", "토"],
@@ -1520,195 +1877,270 @@ def refresh_analysis():
     st.session_state.result = analyze(st.session_state.data, st.session_state.info)
 
 
+
 # ============================================================
-# Layout
+# Clean UI helpers for v0.4
 # ============================================================
 
-st.sidebar.title("⚡ Wattda")
-st.sidebar.caption("무료 건물 전기요금 전문 진단 베타")
-page = st.sidebar.radio(
-    "메뉴",
-    [
-        "서비스 소개",
-        "건물 정보 입력",
-        "데이터 입력",
-        "진단 대시보드",
-        "상세 진단",
-        "리포트 다운로드",
-    ],
-)
-st.sidebar.divider()
-st.sidebar.caption("Wattda v0.2 Professional Beta")
-
-st.markdown(
+def render_top_header():
     """
-    <div class="w-hero">
-        <div class="w-badge">무료 베타 | 건물 전기요금 전문 진단 서비스</div>
-        <div class="w-title-row">
-            <h1>Wattda</h1>
-            <div class="w-author">제작자: 소정호</div>
+    Render the application header.
+
+    The previous version of the app displayed a version tag (e.g. "v0.4 Clean UI Beta") in the
+    status pill on the right-hand side of the header. For end‑users this felt like a
+    development artifact rather than a part of the product. To make the app look more
+    professional and focused on the service itself, the status pill now displays the
+    author name. If you wish to show a version internally, consider doing so in a
+    discreet caption in the sidebar or a hidden debug panel.
+    """
+    st.markdown(
+        f"""
+        <div class="w-app-header">
+            <div>
+                <div class="w-app-kicker">Wattda Diagnostic Tool</div>
+                <h1>건물 전기요금 진단</h1>
+                <p>건물 정보와 전력 데이터를 입력하면 낭비 요인, 피크 시간대, 예상 절감액, 개선 조치를 한 번에 확인할 수 있습니다.</p>
+            </div>
+            <div class="w-app-status">제작자: 소정호</div>
         </div>
-        <p>시간별 전력 데이터를 바탕으로 건물의 전기요금 낭비 요인, 피크 시간대, 예상 절감액, 개선 조치를 자동으로 분석하는 무료 베타 전문 진단 서비스입니다.</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# ============================================================
-# Pages
-# ============================================================
-
-if page == "서비스 소개":
-    info = st.session_state.info
-    result = st.session_state.result
-
-    st.markdown("## 전기요금이 왜 많이 나왔는지 자동으로 진단합니다")
-    st.write(
-        """
-        Wattda는 건물의 시간별 전력 사용 데이터를 바탕으로
-        야간 기저부하, 휴무일 전력 낭비, 냉방 민감도, 피크 시간대를 분석하고
-        예상 절감액과 개선 조치를 자동으로 제안하는 무료 베타 전문 진단 서비스입니다.
-        """
+        """,
+        unsafe_allow_html=True,
     )
 
-    st.info("현재 버전은 무료 베타 버전입니다. 분석 결과는 예비 진단 및 테스트 목적으로 활용해 주세요.")
-    st.caption("현재 표시되는 결과는 기본 샘플 데이터를 기준으로 계산된 예시 결과입니다.")
 
-    st.markdown("### 무엇을 분석하나요?")
+def render_step_bar(active_step=1):
+    steps = [
+        (1, "건물 정보"),
+        (2, "데이터 입력"),
+        (3, "진단 결과"),
+    ]
+    html_steps = ""
+    for num, label in steps:
+        cls = "w-step-active" if num == active_step else "w-step"
+        html_steps += f'<div class="{cls}"><span>{num}</span>{label}</div>'
+    st.markdown(f'<div class="w-stepbar">{html_steps}</div>', unsafe_allow_html=True)
 
-    c1, c2, c3 = st.columns(3)
+
+def render_quick_start_cards():
+    st.markdown("### 시작하기")
+    c1, c2 = st.columns(2)
 
     with c1:
         st.markdown(
             """
-            <div class="w-card">
-                <h3>전력 낭비 탐지</h3>
-                <p class="w-muted">야간, 휴무일, 저점유 시간대의 불필요한 전력 사용을 찾습니다.</p>
+            <div class="w-action-card">
+                <div class="w-action-title">빠른 체험</div>
+                <div class="w-action-desc">샘플 데이터로 바로 진단 결과를 확인합니다.</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+        if st.button("샘플 데이터로 바로 체험하기", type="primary", use_container_width=True):
+            st.session_state.data = make_sample_data()
+            refresh_analysis()
+            st.session_state.current_step = 3
+            st.rerun()
 
     with c2:
         st.markdown(
             """
-            <div class="w-card">
-                <h3>피크 시간 분석</h3>
-                <p class="w-muted">전력 사용량이 가장 높은 시간대를 찾아 운영 원인을 추정합니다.</p>
+            <div class="w-action-card">
+                <div class="w-action-title">내 데이터로 진단</div>
+                <div class="w-action-desc">건물 정보와 CSV 파일을 입력해 실제 데이터를 분석합니다.</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+        if st.button("내 데이터 입력하러 가기", use_container_width=True):
+            st.session_state.current_step = 1
+            st.rerun()
 
-    with c3:
-        st.markdown(
-            """
-            <div class="w-card">
-                <h3>절감액 추정</h3>
-                <p class="w-muted">야간 부하, 휴무일 부하, 냉방 최적화를 기준으로 절감 가능액을 계산합니다.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
+
+def render_summary_cards(info, result):
+    dq = data_quality_summary(result["df"])
+    issues = core_issues(result)
+    issue_text = ", ".join(issues[:2]) if issues else "큰 이상 패턴 없음"
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Wattda 점수", f"{result['score']}/100")
+    c2.metric("예상 월 절감액", f"{krw(result['total_saving_low'])} ~ {krw(result['total_saving_high'])}")
+    c3.metric("핵심 문제", issue_text)
+    c4.metric("데이터 품질", f"{dq['score']}/100")
+
+
+def render_professional_kpi_cards(info, result):
+    kpis = professional_kpis(info, result)
+    st.markdown("### 전문 진단 지표")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("전력 EUI", f"{kpis['electric_eui']:.1f} kWh/㎡·년")
+    k2.metric("부하율", pct(kpis["load_factor"]))
+    k3.metric("기저부하 비중", pct(kpis["baseload_ratio"]))
+    k4.metric("계약전력 사용률", pct(kpis["contract_utilization"]))
+
+    with st.expander("전문 지표 해석 보기"):
+        st.write(f"**부하율:** {kpis['load_factor_comment']}")
+        st.write(f"**기저부하:** {kpis['baseload_comment']}")
+        st.write(f"**계약전력:** {kpis['contract_comment']}")
+        st.caption("전문 지표는 예비 진단용입니다. 실제 절감 성과는 개선 전후 데이터를 비교해 검증해야 합니다.")
+
+
+def render_result_graphs(result):
+    df = result["df"]
+
+    st.markdown("### 전력 사용 패턴")
+    today_df, display_date, used_fallback = get_today_df_for_display(df)
+    if used_fallback:
+        st.caption(f"오늘 데이터가 없어 데이터에 포함된 가장 최근 날짜({display_date})를 표시합니다.")
+
+    g1, g2 = st.columns(2)
+    with g1:
+        st.markdown(f"#### 하루 전력 사용량 | {display_date}")
+        st.line_chart(today_df.set_index("시각")[[COL_KWH]], height=260)
+
+    with g2:
+        monthly = df.copy()
+        monthly["월"] = monthly[COL_DT].dt.to_period("M").astype(str)
+        monthly_summary = monthly.groupby("월", as_index=False)[COL_KWH].sum()
+        st.markdown("#### 월별 전력 사용량")
+        st.bar_chart(monthly_summary.set_index("월")[[COL_KWH]], height=260)
+
+    if COL_IN in today_df.columns or COL_OUT in today_df.columns:
+        st.markdown("#### 실내외 온도 추이")
+        temp_cols = []
+        if COL_IN in today_df.columns:
+            temp_cols.append(COL_IN)
+        if COL_OUT in today_df.columns:
+            temp_cols.append(COL_OUT)
+        st.line_chart(today_df.set_index("시각")[temp_cols], height=260)
+
+
+def render_detail_diagnosis(info, result):
+    st.markdown("### 상세 진단")
+    st.caption("각 항목은 문제, 원인 추정, 조치, 검증 방법 중심으로 정리됩니다.")
+
+    for i, block in enumerate(diagnosis_blocks(info, result), start=1):
+        with st.expander(f"{i}. {block['제목']}", expanded=(i <= 2)):
+            st.markdown(f"**문제**  \n{block['문제']}")
+            st.markdown(f"**원인 추정**  \n{block['원인']}")
+            st.markdown(f"**비용 영향**  \n{block['비용']}")
+            st.markdown(f"**바로 할 조치**  \n{block['조치']}")
+            st.markdown(f"**다음 달 확인 방법**  \n{block['확인']}")
+
+
+def render_recommendation_section(info, result):
+    st.markdown("### 우선 개선 조치")
+    rec_df = recommendation_rows_professional(info, result)
+    st.dataframe(rec_df, width="stretch", hide_index=True)
+
+
+def render_report_downloads(info, result):
+    st.markdown("### 리포트 다운로드")
+    st.caption("진단 결과를 Markdown, HTML, PDF 형식으로 저장할 수 있습니다.")
+
+    md = markdown_report(info, result)
+    html_doc = html_report(info, result)
+    pdf_doc = pdf_bytes(info, result)
+
+    d1, d2, d3 = st.columns(3)
+    with d1:
+        st.download_button(
+            "Markdown 다운로드",
+            data=md.encode("utf-8-sig"),
+            file_name="wattda_report.md",
+            mime="text/markdown",
+            use_container_width=True,
         )
+    with d2:
+        st.download_button(
+            "HTML 다운로드",
+            data=html_doc.encode("utf-8-sig"),
+            file_name="wattda_report.html",
+            mime="text/html",
+            use_container_width=True,
+        )
+    with d3:
+        if pdf_doc:
+            st.download_button(
+                "PDF 다운로드",
+                data=pdf_doc,
+                file_name="wattda_report.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+        else:
+            st.warning("PDF 기능을 사용하려면 reportlab이 필요합니다.")
 
-    st.markdown("### 현재 샘플 진단 결과")
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Wattda 점수", f"{result['score']}/100")
-    m2.metric("진단 등급", f"{result['grade']} | {result['risk']}")
-    m3.metric("예상 월 절감액", f"{krw(result['total_saving_low'])} ~ {krw(result['total_saving_high'])}")
-
-    st.markdown("### 사용 순서")
-    st.markdown(
-        """
-        1. **건물 정보 입력**에서 건물 용도, 면적, 운영시간, 전기요금을 입력합니다.  
-        2. **데이터 입력**에서 샘플 데이터를 사용하거나 CSV를 업로드합니다.  
-        3. **진단 대시보드**에서 전력 사용 패턴을 확인합니다.  
-        4. **상세 진단**에서 문제 원인과 개선 조치를 확인합니다.  
-        5. **리포트 다운로드**에서 Markdown, HTML, PDF 리포트를 저장합니다.
-        """
-    )
-
-    st.markdown("### 분석에 사용하는 데이터")
-    st.write(
-        "기본 분석에는 일시와 전력사용량이 필요합니다. 실외온도, 실내온도, 상대습도, 점유인원을 함께 입력하면 진단 품질이 높아집니다."
-    )
-
-    st.dataframe(
-        pd.DataFrame(
-            [
-                [COL_DT, "필수", "시간 기준 분석, 피크, 야간, 주말 판별"],
-                [COL_KWH, "필수", "전력 사용량 분석"],
-                [COL_OUT, "권장", "냉방 민감도 분석"],
-                [COL_IN, "권장", "실내온도와 쾌적성 진단"],
-                [COL_RH, "권장", "실내 습도 관리 진단"],
-                [COL_OCC, "권장", "점유 대비 전력 사용 진단"],
-                ["계약전력 kW", "권장", "계약전력 사용률과 요금 최적화 진단"],
-                ["연면적 ㎡", "필수", "전력 EUI 계산과 건물 규모 보정"],
-            ],
-            columns=["컬럼명", "중요도", "용도"],
-        ),
-        width="stretch",
-        hide_index=True,
-    )
-
-    st.markdown("### 이번 버전에서 강화된 전문 진단")
-    st.markdown(
-        '''
-        - **전력 EUI**: 연면적 기준 전력 사용 성과를 계산합니다.  
-        - **부하율**: 평균 부하와 피크 부하의 관계를 통해 피크 집중도를 판단합니다.  
-        - **기저부하 비중**: 상시 가동 장비와 누설 부하 가능성을 평가합니다.  
-        - **데이터 품질 점수**: 누락, 중복, 이상치, 권장 컬럼 포함 여부를 점검합니다.  
-        - **검증 방식**: 절감액을 예비 추정치로 표시하고, 개선 전후 데이터 비교를 권장합니다.
-        '''
-    )
-
-elif page == "건물 정보 입력":
-    st.subheader("건물 정보 입력")
-    info = st.session_state.info
-
+def save_building_info_from_form(info):
     col1, col2 = st.columns([1.05, 0.95])
 
     with col1:
+        st.markdown("### 기본 정보")
         건물명 = st.text_input("건물명", info["건물명"])
-        건물용도 = st.selectbox(
-            "건물 용도",
-            ["학원", "스터디카페", "피트니스센터", "병원/의원", "중소형 오피스", "상가", "기타"],
-            index=["학원", "스터디카페", "피트니스센터", "병원/의원", "중소형 오피스", "상가", "기타"].index(info["건물용도"]) if info["건물용도"] in ["학원", "스터디카페", "피트니스센터", "병원/의원", "중소형 오피스", "상가", "기타"] else 0,
-        )
+        building_options = ["학원", "스터디카페", "피트니스센터", "병원/의원", "중소형 오피스", "상가", "기타"]
+        current_type = info["건물용도"] if info["건물용도"] in building_options else "학원"
+        건물용도 = st.selectbox("건물 용도", building_options, index=building_options.index(current_type))
         지역 = st.text_input("지역", info["지역"])
+
+        지도기준도시, 위도, 경도 = render_korea_city_location_picker(info)
+
+        st.markdown("### 규모 및 요금 정보")
         연면적 = st.number_input("연면적 ㎡", min_value=10, value=int(info["연면적"]), step=10)
         층수 = st.number_input("층수", min_value=1, value=int(info["층수"]), step=1)
-        st.markdown("#### 요일별 운영시간")
-        st.caption("요일마다 운영시간이 다를 수 있으므로 각 요일별로 따로 설정할 수 있습니다.")
-
-        default_schedule = info.get("운영스케줄", {})
-        schedule_inputs = {}
-        day_cols = st.columns(2)
-        for idx, day in enumerate(["월", "화", "수", "목", "금", "토", "일"]):
-            base = default_schedule.get(day, {"운영": day in info.get("운영요일", []), "시작": info.get("운영시작", time(9, 0)), "종료": info.get("운영종료", time(18, 0))})
-            with day_cols[idx % 2]:
-                운영 = st.checkbox(f"{day}요일 운영", value=bool(base.get("운영", False)), key=f"op_{day}")
-                시작 = st.time_input(f"{day} 시작", value=base.get("시작", time(9, 0)), key=f"start_{day}", disabled=not 운영)
-                종료 = st.time_input(f"{day} 종료", value=base.get("종료", time(18, 0)), key=f"end_{day}", disabled=not 운영)
-            schedule_inputs[day] = {"운영": 운영, "시작": 시작, "종료": 종료}
-
-        운영요일 = [day for day, setting in schedule_inputs.items() if setting["운영"]]
-        운영시작 = schedule_inputs[운영요일[0]]["시작"] if 운영요일 else time(9, 0)
-        운영종료 = schedule_inputs[운영요일[0]]["종료"] if 운영요일 else time(18, 0)
-
         월전기요금 = st.number_input("월 전기요금 원", min_value=0, value=int(info["월전기요금"]), step=10000)
         월전력사용량 = st.number_input("월 전력사용량 kWh", min_value=1, value=int(info["월전력사용량"]), step=100)
         계약전력 = st.number_input("계약전력 kW", min_value=1, value=int(info["계약전력"]), step=1)
         요금종별 = st.selectbox("요금 종별", ["일반용 전력 갑", "일반용 전력 을", "교육용", "산업용", "기타"], index=0)
         냉방방식 = st.selectbox("냉방 방식", ["시스템에어컨", "개별 에어컨", "중앙 냉방", "냉방 없음", "기타"], index=0)
 
-        if st.button("저장하고 다시 분석", type="primary"):
+        st.markdown("### 요일별 운영시간")
+        st.caption("운영 체크 후 시작과 종료 시간을 선택하세요. 라벨을 최소화하여 한 눈에 보기 쉽도록 구성했습니다.")
+        default_schedule = info.get("운영스케줄", {})
+        schedule_inputs = {}
+        # Iterate over each day and render a single row with checkbox and time inputs.
+        for day in ["월", "화", "수", "목", "금", "토", "일"]:
+            # Prepare defaults. If the day exists in the stored schedule, use its values.
+            base_day = {
+                "운영": day in info.get("운영요일", []),
+                "시작": info.get("운영시작", time(9, 0)),
+                "종료": info.get("운영종료", time(18, 0)),
+            }
+            base_day.update(default_schedule.get(day, {}))
+            # Each row has a checkbox, start time and end time. Collapse labels on time inputs.
+            r1, r2, r3 = st.columns([0.25, 0.375, 0.375])
+            with r1:
+                운영 = st.checkbox(day, value=bool(base_day.get("운영", False)), key=f"op_{day}_v04")
+            with r2:
+                시작 = st.time_input(
+                    "시작",
+                    value=base_day.get("시작", time(9, 0)),
+                    key=f"start_{day}_v04",
+                    disabled=not 운영,
+                    label_visibility="collapsed",
+                )
+            with r3:
+                종료 = st.time_input(
+                    "종료",
+                    value=base_day.get("종료", time(18, 0)),
+                    key=f"end_{day}_v04",
+                    disabled=not 운영,
+                    label_visibility="collapsed",
+                )
+            schedule_inputs[day] = {"운영": 운영, "시작": 시작, "종료": 종료}
+
+        운영요일 = [day for day, setting in schedule_inputs.items() if setting["운영"]]
+        # Use the first selected day as representative start/end times for summary fields
+        운영시작 = schedule_inputs[운영요일[0]]["시작"] if 운영요일 else time(9, 0)
+        운영종료 = schedule_inputs[운영요일[0]]["종료"] if 운영요일 else time(18, 0)
+
+        if st.button("건물 정보 저장하고 다음 단계로", type="primary", use_container_width=True):
             st.session_state.info = {
                 "건물명": 건물명,
                 "건물용도": 건물용도,
                 "지역": 지역,
+                "지도기준도시": 지도기준도시,
+                "위도": 위도,
+                "경도": 경도,
                 "연면적": 연면적,
                 "층수": 층수,
                 "운영요일": 운영요일,
@@ -1722,10 +2154,12 @@ elif page == "건물 정보 입력":
                 "냉방방식": 냉방방식,
             }
             refresh_analysis()
-            st.success("건물 정보가 저장되었고 진단 결과가 갱신되었습니다.")
+            st.session_state.current_step = 2
+            st.success("건물 정보가 저장되었습니다.")
+            st.rerun()
 
     with col2:
-        st.markdown("### 3D 건물 미리보기")
+        st.markdown("### 건물 미리보기")
         preview_info = {
             "건물명": 건물명,
             "건물용도": 건물용도,
@@ -1735,30 +2169,35 @@ elif page == "건물 정보 입력":
         }
         fig = draw_building_preview_3d(preview_info)
         st.pyplot(fig, clear_figure=True)
-        st.caption("입력한 규모를 바탕으로 생성한 단순 3D 건물 미리보기입니다. 고객 설명용 개념 화면으로 활용할 수 있습니다.")
+        st.caption("입력한 규모를 바탕으로 생성한 단순 3D 미리보기입니다.")
 
-elif page == "데이터 입력":
-    st.subheader("전력 데이터 입력")
 
-    st.info(
-        """
-        처음 사용하는 경우에는 먼저 '샘플 데이터 사용'을 선택해 전체 진단 흐름을 확인하세요.
-        실제 건물 데이터를 분석하려면 CSV 업로드를 선택하고 필수 컬럼인 일시와 전력사용량(kWh)을 포함해 주세요.
-        """
-    )
-    st.warning("현재 기본값은 샘플 데이터입니다. 실제 진단을 원하면 CSV 업로드를 사용해 주세요.")
+def render_data_input_page():
+    st.markdown("### 데이터 입력")
+    st.caption("처음에는 샘플 데이터로 체험하고, 이후 실제 CSV 데이터를 업로드하는 흐름을 추천합니다.")
 
     mode = st.radio("입력 방식", ["샘플 데이터 사용", "CSV 업로드"], horizontal=True)
 
     if mode == "샘플 데이터 사용":
-        st.write("샘플 데이터에는 1년치 시간별 데이터가 들어 있으며, 전력 데이터 외에 실외온도, 실내온도, 상대습도, 점유인원 컬럼이 포함되어 있습니다. 1년치 시간별 데이터는 약 8,760행이라 앱에서 충분히 다룰 수 있습니다.")
-        if st.button("샘플 데이터 다시 불러오기", type="primary"):
+        st.markdown(
+            """
+            <div class="w-summary-box">
+            샘플 데이터에는 1년치 시간별 전력사용량과 실외온도, 실내온도, 상대습도, 점유인원 컬럼이 포함되어 있습니다.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("샘플 데이터 적용하고 진단 결과 보기", type="primary", use_container_width=True):
             st.session_state.data = make_sample_data()
             refresh_analysis()
-            st.success("샘플 데이터가 적용되었습니다.")
+            st.session_state.current_step = 3
+            st.rerun()
+
     else:
-        st.write(f"필수 컬럼: {COL_DT}, {COL_KWH}")
-        st.write(f"권장 컬럼: {COL_OUT}, {COL_IN}, {COL_RH}, {COL_OCC}")
+        st.markdown("#### CSV 업로드")
+        st.write(f"필수 컬럼: `{COL_DT}`, `{COL_KWH}`")
+        st.write(f"권장 컬럼: `{COL_OUT}`, `{COL_IN}`, `{COL_RH}`, `{COL_OCC}`")
+
         uploaded = st.file_uploader("CSV 파일 업로드", type=["csv"])
         if uploaded is not None:
             try:
@@ -1770,261 +2209,161 @@ elif page == "데이터 입력":
                     df[COL_DT] = pd.to_datetime(df[COL_DT], errors="coerce")
                     df[COL_KWH] = pd.to_numeric(df[COL_KWH], errors="coerce")
 
-                    optional_numeric_cols = [COL_OUT, COL_IN, COL_RH, COL_OCC]
-                    for col in optional_numeric_cols:
+                    for col in [COL_OUT, COL_IN, COL_RH, COL_OCC]:
                         if col in df.columns:
                             df[col] = pd.to_numeric(df[col], errors="coerce")
 
                     df = df.dropna(subset=[COL_DT, COL_KWH])
-
                     if df.empty:
                         st.error("유효한 일시와 전력사용량 데이터가 없습니다. CSV 날짜 형식과 숫자 형식을 확인해 주세요.")
-                        st.stop()
-
-                    st.session_state.data = prepare_data(df)
-                    refresh_analysis()
-                    st.success("CSV 업로드가 완료되었고 진단 결과가 갱신되었습니다.")
+                    else:
+                        st.session_state.data = prepare_data(df)
+                        refresh_analysis()
+                        st.success("CSV 업로드가 완료되었고 진단 결과가 갱신되었습니다.")
+                        if st.button("진단 결과 보기", type="primary", use_container_width=True):
+                            st.session_state.current_step = 3
+                            st.rerun()
             except Exception as e:
                 st.error(f"CSV 처리 중 오류가 발생했습니다: {e}")
 
-    st.markdown("### 컬럼 가이드")
-    guide_df = pd.DataFrame(
-        [
-            [COL_DT, "필수", "2026-08-01 13:00", "시간 기준 분석"],
-            [COL_KWH, "필수", "41.8", "전력 사용량 분석"],
-            [COL_OUT, "권장", "31.2", "실외온도와 냉방 민감도"],
-            [COL_IN, "권장", "25.6", "실내온도와 쾌적성"],
-            [COL_RH, "권장", "58.0", "실내 습도 상태"],
-            [COL_OCC, "권장", "72", "점유 대비 전력 사용"],
-        ],
-        columns=["컬럼명", "구분", "예시", "분석 활용"],
-    )
-    st.dataframe(guide_df, width="stretch", hide_index=True)
+    with st.expander("CSV 컬럼 가이드 보기"):
+        guide_df = pd.DataFrame(
+            [
+                [COL_DT, "필수", "2026-08-01 13:00", "시간 기준 분석"],
+                [COL_KWH, "필수", "41.8", "전력 사용량 분석"],
+                [COL_OUT, "권장", "31.2", "실외온도와 냉방 민감도"],
+                [COL_IN, "권장", "25.6", "실내온도와 쾌적성"],
+                [COL_RH, "권장", "58.0", "실내 습도 상태"],
+                [COL_OCC, "권장", "72", "점유 대비 전력 사용"],
+            ],
+            columns=["컬럼명", "구분", "예시", "분석 활용"],
+        )
+        st.dataframe(guide_df, width="stretch", hide_index=True)
 
-    st.markdown("### 현재 데이터 미리보기")
-    st.dataframe(st.session_state.data.head(80), width="stretch")
-
+    st.markdown("#### 현재 데이터 미리보기")
+    st.dataframe(st.session_state.data.head(40), width="stretch")
     preview_result = analyze(st.session_state.data, st.session_state.info)
     render_data_quality_box(preview_result)
 
-    st.download_button(
-        "현재 데이터 CSV 다운로드",
-        data=st.session_state.data.to_csv(index=False).encode("utf-8-sig"),
-        file_name="wattda_sample_data_v01.csv",
-        mime="text/csv",
-    )
 
-elif page == "진단 대시보드":
-    st.subheader("진단 대시보드")
+def render_results_page():
     info = st.session_state.info
     result = st.session_state.result
-    df = result["df"]
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Wattda 점수", f"{result['score']}/100")
-    col2.metric("진단 등급", f"{result['grade']} | {result['risk']}")
-    col3.metric("월 전기요금", krw(info["월전기요금"]))
-    col4.metric("평균 단가", f"{result['unit_price']:.1f}원/kWh")
+    render_current_weather_box(info)
 
-    kpis = professional_kpis(info, result)
-    dq = data_quality_summary(df)
+    st.markdown("### 핵심 요약")
+    render_summary_cards(info, result)
 
-    st.markdown("### 전문 진단 지표")
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("전력 EUI", f"{kpis['electric_eui']:.1f} kWh/㎡·년")
-    k2.metric("부하율", pct(kpis["load_factor"]))
-    k3.metric("기저부하 비중", pct(kpis["baseload_ratio"]))
-    k4.metric("계약전력 사용률", pct(kpis["contract_utilization"]))
-    k5.metric("데이터 품질", f"{dq['score']}/100")
-
-    with st.expander("전문 지표 해석 보기"):
-        st.write(f"**부하율 해석:** {kpis['load_factor_comment']}")
-        st.write(f"**기저부하 해석:** {kpis['baseload_comment']}")
-        st.write(f"**계약전력 해석:** {kpis['contract_comment']}")
-        st.write("**절감액 해석:** 현재 절감액은 예비 추정치이며, 실제 성과는 개선 전후 데이터를 비교해 검증해야 합니다.")
-
-    render_data_quality_box(result)
-
-    st.markdown("### 핵심 문제")
-    for issue in core_issues(result):
+    issues = core_issues(result)
+    st.markdown("#### 핵심 문제")
+    for issue in issues:
         st.markdown(f'<span class="w-pill">{issue}</span>', unsafe_allow_html=True)
 
-    # 한국 기준 오늘 날짜의 0시부터 24시까지 표시
-    today_kst = pd.Timestamp.now(tz="Asia/Seoul").date()
-    today_df = df[df[COL_DT].dt.date == today_kst].copy()
-    display_date = today_kst
+    render_professional_kpi_cards(info, result)
 
-    if today_df.empty:
-        display_date = df[COL_DT].dt.date.max()
-        today_df = df[df[COL_DT].dt.date == display_date].copy()
-        st.warning(f"오늘 날짜({today_kst}) 데이터가 없어, 데이터에 포함된 가장 최근 날짜({display_date})를 표시합니다.")
+    with st.expander("데이터 품질 자세히 보기", expanded=False):
+        render_data_quality_box(result)
 
-    today_df = today_df.sort_values(COL_DT)
-    today_df["시각"] = today_df[COL_DT].dt.hour
+    render_result_graphs(result)
+    render_detail_diagnosis(info, result)
+    render_recommendation_section(info, result)
+    render_report_downloads(info, result)
 
-    st.markdown(f"### 오늘 하루 전력 사용량 | {display_date}")
-    st.caption("한국 시간 기준 0시부터 24시까지의 하루 전력 사용량입니다.")
-    st.line_chart(today_df.set_index("시각")[[COL_KWH]], height=300)
 
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("오늘 총 전력사용량", kwh(today_df[COL_KWH].sum()))
-    metric_cols[1].metric("오늘 최대 시간 사용량", kwh(today_df[COL_KWH].max()))
-    metric_cols[2].metric("야간 사용 비율", pct(result["night_ratio"]))
-    metric_cols[3].metric("주말 사용 비율", pct(result["weekend_ratio"]))
 
-    if COL_IN in today_df.columns or COL_OUT in today_df.columns:
-        st.markdown(f"### 오늘 하루 실내외 온도 추이 | {display_date}")
-        st.caption("한국 시간 기준 0시부터 24시까지의 실내온도와 실외온도 변화입니다. 빨간색 선은 실외온도입니다.")
-        temp_cols = []
-        if COL_IN in today_df.columns:
-            temp_cols.append(COL_IN)
-        if COL_OUT in today_df.columns:
-            temp_cols.append(COL_OUT)
-        st.line_chart(
-            today_df.set_index("시각")[temp_cols],
-            height=300,
-            color=["#2563EB", "#EF4444"][:len(temp_cols)],
+# ============================================================
+# Layout
+# ============================================================
+
+if "current_step" not in st.session_state:
+    st.session_state.current_step = 0
+
+st.sidebar.title("⚡ Wattda")
+st.sidebar.caption("건물 전기요금 전문 진단")
+st.sidebar.divider()
+st.sidebar.markdown("### 진행 단계")
+
+side_steps = {
+    "진단 시작": 0,
+    "1. 건물 정보": 1,
+    "2. 데이터 입력": 2,
+    "3. 진단 결과": 3,
+}
+
+# Use a radio button for navigation so that all step labels remain visible on the dark sidebar.
+# The default index reflects the current step stored in session state.
+step_labels = list(side_steps.keys())
+current_index = list(side_steps.values()).index(st.session_state.current_step)
+selected_label = st.sidebar.radio(
+    "",  # hide the built‑in label for a cleaner look
+    step_labels,
+    index=current_index,
+)
+# When the user selects a different step, update session state and trigger a rerun.
+if side_steps[selected_label] != st.session_state.current_step:
+    st.session_state.current_step = side_steps[selected_label]
+    st.rerun()
+
+st.sidebar.divider()
+# Replace the version text in the sidebar with the author name and a description.
+st.sidebar.caption("제작자: 소정호")
+st.sidebar.caption("Netlify 랜딩페이지에서 연결되는 진단 도구입니다.")
+
+render_top_header()
+
+if st.session_state.current_step == 0:
+    render_step_bar(1)
+    st.markdown("## 진단을 시작하세요")
+    st.write(
+        """
+        이미 서비스 소개는 랜딩페이지에서 확인했으므로, 이 화면에서는 바로 진단을 시작할 수 있도록 구성했습니다.
+        샘플 데이터로 빠르게 체험하거나, 실제 건물 정보를 입력해 진단을 진행하세요.
+        """
+    )
+    render_quick_start_cards()
+
+    st.markdown("### 진단 흐름")
+    f1, f2, f3 = st.columns(3)
+    with f1:
+        st.markdown(
+            """
+            <div class="w-card">
+                <h3>1. 건물 정보</h3>
+                <p class="w-muted">건물 용도, 면적, 운영시간, 요금정보, 위치를 입력합니다.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with f2:
+        st.markdown(
+            """
+            <div class="w-card">
+                <h3>2. 전력 데이터</h3>
+                <p class="w-muted">샘플 데이터 또는 CSV 파일을 사용해 시간별 전력 패턴을 분석합니다.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with f3:
+        st.markdown(
+            """
+            <div class="w-card">
+                <h3>3. 진단 결과</h3>
+                <p class="w-muted">절감 가능액, 전문 지표, 상세 진단, 리포트를 확인합니다.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-    st.markdown("### 월별 전력 사용량")
-    monthly = df.copy()
-    monthly["월"] = monthly[COL_DT].dt.to_period("M").astype(str)
-    monthly_summary = monthly.groupby("월", as_index=False)[COL_KWH].sum()
-    monthly_summary["예상전기요금(원)"] = monthly_summary[COL_KWH] * result["unit_price"]
+elif st.session_state.current_step == 1:
+    render_step_bar(1)
+    save_building_info_from_form(st.session_state.info)
 
-    year_cols = st.columns(3)
-    year_cols[0].metric("분석 기간 총 전력사용량", kwh(monthly_summary[COL_KWH].sum()))
-    year_cols[1].metric("분석 기간 예상 전기요금", krw(monthly_summary["예상전기요금(원)"].sum()))
-    year_cols[2].metric("월평균 전력사용량", kwh(monthly_summary[COL_KWH].mean()))
+elif st.session_state.current_step == 2:
+    render_step_bar(2)
+    render_data_input_page()
 
-    st.bar_chart(monthly_summary.set_index("월")[[COL_KWH]], height=260, color="#2563EB")
-
-    if COL_IN in df.columns or COL_OUT in df.columns:
-        st.markdown("### 월별 평균 실내외 온도")
-        monthly_temp = df.copy()
-        monthly_temp["월"] = monthly_temp[COL_DT].dt.month
-        monthly_temp_summary = monthly_temp.groupby("월", as_index=False).agg({
-            COL_IN: "mean" if COL_IN in monthly_temp.columns else "size",
-            COL_OUT: "mean" if COL_OUT in monthly_temp.columns else "size",
-        })
-
-        temp_col1, temp_col2 = st.columns(2)
-        if COL_IN in monthly_temp_summary.columns:
-            with temp_col1:
-                st.caption("월별 평균 실내온도")
-                st.bar_chart(monthly_temp_summary.set_index("월")[[COL_IN]], height=260, color="#2563EB")
-        if COL_OUT in monthly_temp_summary.columns:
-            with temp_col2:
-                st.caption("월별 평균 실외온도")
-                st.bar_chart(monthly_temp_summary.set_index("월")[[COL_OUT]], height=260, color="#EF4444")
-
-    st.markdown("### 절감액 추정")
-    s1, s2, s3 = st.columns(3)
-    s1.metric("야간 절감 가능액", krw(result["night_saving"]))
-    s2.metric("주말 절감 가능액", krw(result["weekend_saving"]))
-    s3.metric("냉방 최적화", f"{krw(result['cooling_saving_low'])} ~ {krw(result['cooling_saving_high'])}")
-
-    money_card("총 월 절감 가능액", f"{krw(result['total_saving_low'])} ~ {krw(result['total_saving_high'])}")
-
-elif page == "상세 진단":
-    st.subheader("상세 진단")
-    info = st.session_state.info
-    result = st.session_state.result
-    blocks = diagnosis_blocks(info, result)
-
-    st.markdown(
-        """
-        <div class="w-summary-box">
-        상세 진단은 문제, 원인 추정, 비용 영향, 바로 할 조치, 필요 추가 데이터, 검증 방법 순서로 정리합니다.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    dq = render_data_quality_box(result)
-    st.markdown("### 절감액 검증 방식")
-    st.info(
-        "현재 절감액은 예비 추정치입니다. 실제 절감 성과는 개선 전후 최소 1개월 이상의 전력 데이터를 비교해 검증하는 것을 권장합니다. "
-        "운영스케줄 조정이나 행동개입처럼 건물 전체에 영향을 주는 조치는 건물 전체 전력 기반 검증 방식이 적합합니다."
-    )
-
-    for block in blocks:
-        st.markdown(f"### {block['제목']}")
-        st.markdown(f"**문제**  \n{block['문제']}")
-        st.markdown(f"**원인 추정**  \n{block['원인']}")
-        st.markdown(f"**비용 영향**  \n{block['비용']}")
-        st.markdown(f"**바로 할 조치**  \n{block['조치']}")
-        st.markdown(f"**다음 달 확인 방법**  \n{block['확인']}")
-        st.divider()
-
-    st.markdown("### 우선 개선 조치")
-    st.dataframe(recommendations(result), width="stretch", hide_index=True)
-
-elif page == "리포트 다운로드":
-    st.subheader("리포트 다운로드")
-
-    st.info(
-        '''
-        리포트에는 전력 EUI, 부하율, 기저부하 비중, 계약전력 사용률, 데이터 품질 점수, 절감액 검증 방식이 포함됩니다.
-        현재 절감액은 예비 추정치이며, 실제 성과는 개선 전후 데이터를 통해 검증해야 합니다.
-        '''
-    )
-
-    st.info(
-        """
-        진단 결과를 Markdown, HTML, PDF 형식으로 저장할 수 있습니다.
-        무료 베타 버전에서는 기본 샘플 데이터 또는 업로드한 CSV 데이터를 기준으로 리포트가 생성됩니다.
-        """
-    )
-    info = st.session_state.info
-    result = st.session_state.result
-    md = markdown_report(info, result)
-
-    top_metrics = st.columns(3)
-    top_metrics[0].metric("진단 점수", f"{result['score']}/100")
-    top_metrics[1].metric("진단 등급", f"{result['grade']} | {result['risk']}")
-    top_metrics[2].metric("핵심 문제 수", f"{len(core_issues(result))}개")
-    money_card("월 절감 가능액", f"{krw(result['total_saving_low'])} ~ {krw(result['total_saving_high'])}")
-
-    st.markdown("### 리포트 미리보기")
-    st.markdown(build_report_body(info, result))
-
-    st.caption("오늘 하루 전력 사용량")
-    today_df, display_date, _ = get_today_df_for_display(result["df"])
-    st.line_chart(today_df.set_index("시각")[[COL_KWH]], height=260)
-
-    st.caption("월별 전력 사용량")
-    report_monthly = result["df"].copy()
-    report_monthly["월"] = report_monthly[COL_DT].dt.to_period("M").astype(str)
-    report_monthly_summary = report_monthly.groupby("월", as_index=False)[COL_KWH].sum()
-    st.bar_chart(report_monthly_summary.set_index("월")[[COL_KWH]], height=260, color="#2563EB")
-
-    st.markdown("### 8. 참고")
-    st.write("이 리포트는 시간별 전력 데이터와 건물 기본정보를 바탕으로 생성된 운영 진단 결과입니다. 실제 절감액은 운영 방식, 요금제, 계절 조건에 따라 달라질 수 있습니다.")
-
-    st.divider()
-    st.download_button(
-        "Markdown 리포트 다운로드",
-        data=md.encode("utf-8-sig"),
-        file_name="wattda_report_v01.md",
-        mime="text/markdown",
-    )
-
-    html_text = html_report(info, result)
-    st.download_button(
-        "HTML 리포트 다운로드",
-        data=html_text.encode("utf-8-sig"),
-        file_name="wattda_report_v01.html",
-        mime="text/html",
-    )
-
-    pdf = pdf_bytes(info, result)
-    if pdf:
-        st.download_button(
-            "PDF 리포트 다운로드",
-            data=pdf,
-            file_name="wattda_report_v01.pdf",
-            mime="application/pdf",
-        )
-    else:
-        st.warning("PDF 생성을 위해 reportlab 설치가 필요합니다. 설치 명령어: py -m pip install reportlab")
+elif st.session_state.current_step == 3:
+    render_step_bar(3)
+    render_results_page()
