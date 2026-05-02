@@ -1161,7 +1161,7 @@ def refresh_analysis():
 # ============================================================
 
 st.sidebar.title("⚡ Wattda")
-st.sidebar.caption("무료 건물 전기요금 진단 MVP")
+st.sidebar.caption("무료 건물 전기요금 진단 베타")
 page = st.sidebar.radio(
     "메뉴",
     [
@@ -1174,17 +1174,17 @@ page = st.sidebar.radio(
     ],
 )
 st.sidebar.divider()
-st.sidebar.caption("Wattda v0.1 Free MVP")
+st.sidebar.caption("Wattda v0.1 Free Beta")
 
 st.markdown(
     """
     <div class="w-hero">
-        <div class="w-badge">무료 MVP | 건물 전기요금 진단 서비스</div>
+        <div class="w-badge">무료 베타 | 건물 전기요금 진단 서비스</div>
         <div class="w-title-row">
             <h1>Wattda</h1>
             <div class="w-author">제작자: 소정호</div>
         </div>
-        <p>시간별 전력 데이터를 바탕으로 건물의 전기요금 낭비 요인, 피크 시간대, 예상 절감액, 개선 조치를 자동으로 분석하는 무료 MVP 서비스입니다.</p>
+        <p>시간별 전력 데이터를 바탕으로 건물의 전기요금 낭비 요인, 피크 시간대, 예상 절감액, 개선 조치를 자동으로 분석하는 무료 베타 서비스입니다.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -1204,11 +1204,11 @@ if page == "서비스 소개":
         """
         Wattda는 건물의 시간별 전력 사용 데이터를 바탕으로
         야간 기저부하, 휴무일 전력 낭비, 냉방 민감도, 피크 시간대를 분석하고
-        예상 절감액과 개선 조치를 자동으로 제안하는 무료 MVP 서비스입니다.
+        예상 절감액과 개선 조치를 자동으로 제안하는 무료 베타 서비스입니다.
         """
     )
 
-    st.info("현재 버전은 무료 MVP입니다. 분석 결과는 예비 진단 및 테스트 목적으로 활용해 주세요.")
+    st.info("현재 버전은 무료 베타 버전입니다. 분석 결과는 예비 진단 및 테스트 목적으로 활용해 주세요.")
     st.caption("현재 표시되는 결과는 기본 샘플 데이터를 기준으로 계산된 예시 결과입니다.")
 
     st.markdown("### 무엇을 분석하나요?")
@@ -1560,7 +1560,7 @@ elif page == "리포트 다운로드":
     st.info(
         """
         진단 결과를 Markdown, HTML, PDF 형식으로 저장할 수 있습니다.
-        무료 MVP 버전에서는 기본 샘플 데이터 또는 업로드한 CSV 데이터를 기준으로 리포트가 생성됩니다.
+        무료 베타 버전에서는 기본 샘플 데이터 또는 업로드한 CSV 데이터를 기준으로 리포트가 생성됩니다.
         """
     )
     info = st.session_state.info
