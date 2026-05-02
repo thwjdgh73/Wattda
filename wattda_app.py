@@ -286,6 +286,356 @@ def safe_div(a, b, default=0):
 
 
 # ============================================================
+# Professional KPI and data quality helpers
+# ============================================================
+
+def number1(value, suffix=""):
+    try:
+        return f"{float(value):,.1f}{suffix}"
+    except Exception:
+        return f"0.0{suffix}"
+
+
+def estimate_interval_hours(df):
+    try:
+        tmp = df[[COL_DT]].dropna().sort_values(COL_DT).copy()
+        diffs = tmp[COL_DT].diff().dropna().dt.total_seconds() / 3600
+        if len(diffs) == 0:
+            return 1.0
+        median_hours = float(diffs.median())
+        if median_hours <= 0 or pd.isna(median_hours):
+            return 1.0
+        return median_hours
+    except Exception:
+        return 1.0
+
+
+def data_quality_summary(raw_df):
+    """
+    Basic data quality screening for an energy diagnosis app.
+
+    Checks:
+    - required columns
+    - timestamp parse quality
+    - numeric kWh parse quality
+    - duplicated timestamps
+    - missing time intervals
+    - negative kWh values
+    - high outliers
+    - optional diagnostic columns
+    """
+    df = raw_df.copy()
+    messages = []
+    warnings = []
+    score = 100
+
+    required_cols = [COL_DT, COL_KWH]
+    missing_required = [c for c in required_cols if c not in df.columns]
+    optional_cols = [COL_OUT, COL_IN, COL_RH, COL_OCC]
+    present_optional = [c for c in optional_cols if c in df.columns]
+    missing_optional = [c for c in optional_cols if c not in df.columns]
+
+    if missing_required:
+        score -= 45
+        warnings.append(f"필수 컬럼 누락: {', '.join(missing_required)}")
+        return {
+            "score": max(0, score),
+            "grade": "낮음",
+            "messages": messages,
+            "warnings": warnings,
+            "missing_required": missing_required,
+            "present_optional": present_optional,
+            "missing_optional": missing_optional,
+            "duplicate_count": 0,
+            "missing_intervals": None,
+            "negative_count": None,
+            "outlier_count": None,
+            "valid_rows": 0,
+            "total_rows": len(df),
+        }
+
+    total_rows = len(df)
+    ts = pd.to_datetime(df[COL_DT], errors="coerce")
+    kwh_series = pd.to_numeric(df[COL_KWH], errors="coerce")
+
+    invalid_ts = int(ts.isna().sum())
+    invalid_kwh = int(kwh_series.isna().sum())
+    valid_mask = ts.notna() & kwh_series.notna()
+    valid_rows = int(valid_mask.sum())
+
+    if total_rows == 0:
+        score -= 70
+        warnings.append("데이터 행이 없습니다.")
+    else:
+        invalid_ratio = safe_div(invalid_ts + invalid_kwh, total_rows * 2, 0)
+        if invalid_ratio > 0.10:
+            score -= 25
+        elif invalid_ratio > 0.03:
+            score -= 12
+
+    if invalid_ts > 0:
+        warnings.append(f"날짜로 해석되지 않은 행: {invalid_ts}개")
+    if invalid_kwh > 0:
+        warnings.append(f"전력사용량이 숫자로 해석되지 않은 행: {invalid_kwh}개")
+
+    clean = pd.DataFrame({COL_DT: ts, COL_KWH: kwh_series}).dropna().sort_values(COL_DT)
+
+    duplicate_count = int(clean[COL_DT].duplicated().sum())
+    if duplicate_count > 0:
+        score -= min(15, 5 + duplicate_count)
+        warnings.append(f"중복 타임스탬프: {duplicate_count}개")
+
+    negative_count = int((clean[COL_KWH] < 0).sum())
+    if negative_count > 0:
+        score -= min(20, 8 + negative_count)
+        warnings.append(f"음수 전력사용량: {negative_count}개")
+
+    outlier_count = 0
+    if len(clean) >= 20:
+        q1 = clean[COL_KWH].quantile(0.25)
+        q3 = clean[COL_KWH].quantile(0.75)
+        iqr = q3 - q1
+        if iqr > 0:
+            upper = q3 + 3.0 * iqr
+            outlier_count = int((clean[COL_KWH] > upper).sum())
+            if outlier_count > 0:
+                score -= min(10, outlier_count)
+                warnings.append(f"상위 이상치 후보: {outlier_count}개")
+
+    missing_intervals = None
+    if len(clean) >= 3:
+        diffs = clean[COL_DT].diff().dropna()
+        median_delta = diffs.median()
+        if pd.notna(median_delta) and median_delta.total_seconds() > 0:
+            expected = pd.date_range(clean[COL_DT].min(), clean[COL_DT].max(), freq=median_delta)
+            missing_intervals = max(0, len(expected) - clean[COL_DT].nunique())
+            if missing_intervals > 0:
+                missing_ratio = safe_div(missing_intervals, len(expected), 0)
+                if missing_ratio > 0.10:
+                    score -= 20
+                elif missing_ratio > 0.03:
+                    score -= 10
+                else:
+                    score -= 4
+                warnings.append(f"추정 누락 시간 구간: {missing_intervals}개")
+
+    if len(present_optional) >= 3:
+        messages.append("실외온도, 실내온도, 습도 또는 점유 데이터가 포함되어 있어 진단 해석력이 높습니다.")
+    elif len(present_optional) >= 1:
+        messages.append("일부 권장 컬럼이 포함되어 있으나, 점유·실내환경 기반 진단은 제한적으로 해석해야 합니다.")
+        score -= 4
+    else:
+        warnings.append("권장 컬럼이 없어 냉방·쾌적성·점유 기반 진단의 신뢰도가 제한됩니다.")
+        score -= 10
+
+    score = int(max(0, min(100, round(score))))
+
+    if score >= 85:
+        grade = "높음"
+    elif score >= 70:
+        grade = "보통"
+    elif score >= 55:
+        grade = "주의"
+    else:
+        grade = "낮음"
+
+    if not warnings:
+        messages.append("필수 데이터 구조와 시간축 품질이 전반적으로 양호합니다.")
+
+    return {
+        "score": score,
+        "grade": grade,
+        "messages": messages,
+        "warnings": warnings,
+        "missing_required": missing_required,
+        "present_optional": present_optional,
+        "missing_optional": missing_optional,
+        "duplicate_count": duplicate_count,
+        "missing_intervals": missing_intervals,
+        "negative_count": negative_count,
+        "outlier_count": outlier_count,
+        "valid_rows": valid_rows,
+        "total_rows": total_rows,
+    }
+
+
+def professional_kpis(info, result):
+    df = result["df"].copy()
+    floor_area = max(float(info.get("연면적", 0) or 0), 1.0)
+    contract_kw = max(float(info.get("계약전력", 0) or 0), 0.0)
+
+    period_days = max(1, (df[COL_DT].max() - df[COL_DT].min()).days + 1)
+    total_kwh = float(df[COL_KWH].sum())
+    annualized_kwh = total_kwh * 365 / period_days
+    electric_eui = annualized_kwh / floor_area
+
+    avg_kw = float(df[COL_KWH].mean())
+    peak_kw = float(df[COL_KWH].max())
+    load_factor = safe_div(avg_kw, peak_kw, 0) * 100
+
+    base_threshold = df[COL_KWH].quantile(0.10)
+    base_avg = float(df.loc[df[COL_KWH] <= base_threshold, COL_KWH].mean()) if len(df) > 0 else 0
+    baseload_ratio = safe_div(base_avg, avg_kw, 0) * 100
+
+    contract_utilization = safe_div(peak_kw, contract_kw, 0) * 100 if contract_kw > 0 else 0
+
+    peak_hour_counts = df.sort_values(COL_KWH, ascending=False).head(max(10, min(50, len(df))))["시간"].value_counts()
+    repeated_peak_hour = int(peak_hour_counts.idxmax()) if len(peak_hour_counts) else int(result["peak"]["시간"])
+
+    if load_factor < 35:
+        load_factor_comment = "피크 집중도가 높아 부하이동 또는 계약전력 검토 여지가 있습니다."
+    elif load_factor < 55:
+        load_factor_comment = "피크가 일부 시간대에 집중되는 편입니다."
+    else:
+        load_factor_comment = "평균 부하와 피크 부하의 차이가 비교적 안정적입니다."
+
+    if baseload_ratio >= 55:
+        baseload_comment = "상시부하 비중이 높아 야간·대기전력·상시가동 설비 점검이 필요합니다."
+    elif baseload_ratio >= 40:
+        baseload_comment = "기저부하가 다소 높은 편입니다."
+    else:
+        baseload_comment = "기저부하 비중은 상대적으로 낮은 편입니다."
+
+    if contract_kw <= 0:
+        contract_comment = "계약전력 정보가 부족해 계약전력 사용률을 판단할 수 없습니다."
+    elif contract_utilization < 45:
+        contract_comment = "계약전력 대비 피크가 낮아 최근 12개월 피크를 기준으로 계약전력 조정 가능성을 검토할 수 있습니다."
+    elif contract_utilization > 95:
+        contract_comment = "피크가 계약전력에 매우 근접합니다. 피크 관리와 초과 위험 점검이 필요합니다."
+    else:
+        contract_comment = "계약전력 대비 피크 사용률이 중간 범위입니다."
+
+    return {
+        "period_days": period_days,
+        "annualized_kwh": annualized_kwh,
+        "electric_eui": electric_eui,
+        "avg_kw": avg_kw,
+        "peak_kw": peak_kw,
+        "load_factor": load_factor,
+        "baseload_ratio": baseload_ratio,
+        "base_avg": base_avg,
+        "contract_utilization": contract_utilization,
+        "repeated_peak_hour": repeated_peak_hour,
+        "load_factor_comment": load_factor_comment,
+        "baseload_comment": baseload_comment,
+        "contract_comment": contract_comment,
+    }
+
+
+def confidence_from_quality(result, dq):
+    score = int(dq.get("score", 0))
+    if score >= 85 and result["cooling_sensitivity"] is not None:
+        return "높음"
+    if score >= 70:
+        return "보통"
+    if score >= 55:
+        return "주의"
+    return "낮음"
+
+
+def recommendation_rows_professional(info, result):
+    dq = data_quality_summary(result["df"])
+    confidence = confidence_from_quality(result, dq)
+    rows = []
+
+    def add(action, effect, difficulty, required_data, verification, category="즉시 실행 가능"):
+        rows.append({
+            "구분": category,
+            "우선순위": len(rows) + 1,
+            "개선 조치": action,
+            "예상 효과": effect,
+            "난이도": difficulty,
+            "진단 신뢰도": confidence,
+            "필요 추가 데이터": required_data,
+            "검증 방법": verification,
+        })
+
+    if result["night_ratio"] >= 35:
+        add(
+            "영업 종료 후 조명, 간판, 콘센트, 환기팬, 시스템에어컨 종료 상태 점검",
+            "중간~높음" if result["night_ratio"] >= 45 else "중간",
+            "낮음",
+            "설비별 서브미터 또는 종료 체크리스트가 있으면 원인 식별 가능",
+            "개선 전후 야간 평균 kWh/h와 야간 사용비율 비교",
+        )
+
+    if result["weekend_ratio"] >= 40:
+        add(
+            "휴무일 냉방, 조명, 간판, 환기 스케줄 분리",
+            "중간~높음",
+            "낮음",
+            "휴무일 실제 운영 이벤트 로그",
+            "개선 전후 주말/평일 사용비율 비교",
+        )
+
+    if result["cooling_sensitivity"] is not None and result["cooling_sensitivity"] >= 3:
+        add(
+            "오후 피크 시간대 냉방 설정온도와 공간별 운전 스케줄 조정",
+            "중간",
+            "중간",
+            "실내온도, 실외온도, 냉방 운전상태, 공간별 점유 데이터",
+            "유사 외기온 조건에서 14~17시 kWh와 실내온도 비교",
+        )
+
+    if result["low_occupancy_ratio"] is not None and result["low_occupancy_ratio"] >= 65:
+        add(
+            "저점유 시간대 부분 운전 또는 구역별 운전 검토",
+            "중간",
+            "중간",
+            "공간별 점유, 조명 회로, 냉방 구역 데이터",
+            "점유 대비 kWh 지표와 저점유 시간 평균 부하 비교",
+        )
+
+    add(
+        "피크 Top 5 시간대의 실제 설비 운전 상태 확인",
+        "중간",
+        "낮음",
+        "피크 시간대 설비 운전 기록 또는 현장 점검표",
+        "반복 피크 시간대와 최대 kWh 감소 여부 비교",
+    )
+
+    add(
+        "CO₂ 또는 점유 센서 기반 환기·냉방 제어 가능성 검토",
+        "중간~높음",
+        "중간",
+        "CO₂, 점유, 외기댐퍼, 팬 운전 데이터",
+        "개선 전후 환기 관련 전력과 IAQ 지표 동시 비교",
+        category="추가 데이터 필요",
+    )
+
+    add(
+        "계약전력과 피크수요의 적정성 검토",
+        "요금 절감 중심",
+        "낮음",
+        "최근 12개월 최대수요, 요금청구서, 계약전력 이력",
+        "계약전력 조정 전후 기본요금과 초과 위험 비교",
+        category="요금 최적화",
+    )
+
+    return pd.DataFrame(rows)
+
+
+def render_data_quality_box(result):
+    dq = data_quality_summary(result["df"])
+    st.markdown("### 데이터 품질 요약")
+    q1, q2, q3, q4 = st.columns(4)
+    q1.metric("데이터 품질 점수", f"{dq['score']}/100")
+    q2.metric("진단 신뢰도", dq["grade"])
+    q3.metric("유효 행 수", f"{dq['valid_rows']:,}개")
+    q4.metric("권장 컬럼", f"{len(dq['present_optional'])}/4개")
+
+    if dq["messages"]:
+        for msg in dq["messages"]:
+            st.success(msg)
+    if dq["warnings"]:
+        for msg in dq["warnings"]:
+            st.warning(msg)
+
+    return dq
+
+
+
+# ============================================================
 # Sample data generation
 # ============================================================
 
@@ -955,7 +1305,21 @@ def build_report_body(info, result):
 최대 시간 사용량: {kwh(result['max_hourly'])}
 피크 발생 시점: {peak[COL_DT].strftime('%m월 %d일 %H시')}
 
-## 3. 상세 진단 요약
+## 3. 전문 진단 지표
+전력 EUI: {professional_kpis(info, result)['electric_eui']:.1f} kWh/㎡·년
+부하율: {professional_kpis(info, result)['load_factor']:.1f}%
+기저부하 비중: {professional_kpis(info, result)['baseload_ratio']:.1f}%
+계약전력 사용률: {professional_kpis(info, result)['contract_utilization']:.1f}%
+반복 피크 시간대: {professional_kpis(info, result)['repeated_peak_hour']}시
+데이터 품질 점수: {data_quality_summary(result['df'])['score']}/100
+진단 신뢰도: {confidence_from_quality(result, data_quality_summary(result['df']))}
+
+## 4. 절감액 해석과 검증 방식
+현재 표시되는 절감액은 시간별 전력 데이터, 운영시간, 주말 사용, 냉방 민감도에 기반한 예비 추정치입니다.
+실제 절감 성과는 개선 전후의 전력 데이터를 동일 조건에서 비교해 검증해야 합니다.
+권장 검증 방식: 건물 전체 전력 기반 사후 검증. 최소 1개월 이상, 가능하면 동일 계절의 개선 전후 데이터를 비교하는 것을 권장합니다.
+
+## 5. 상세 진단 요약
 """
     for block in diagnosis_blocks(info, result)[:5]:
         text += f"""
@@ -968,13 +1332,13 @@ def build_report_body(info, result):
 """
 
     rec_df = recommendations(result)
-    text += "\n## 4. 우선 개선 조치\n"
+    text += "\n## 6. 우선 개선 조치\n"
     for _, row in rec_df.iterrows():
         text += f"{row['우선순위']}. {row['개선 조치']} | 예상 효과: {row['예상 효과']} | 난이도: {row['난이도']}\n"
 
     text += """
 
-## 5. 간략 그래프 요약
+## 7. 간략 그래프 요약
 아래 그래프는 오늘 하루 전력 사용량과 월별 전력 사용량을 보여줍니다. 하루 중 사용 패턴과 연간 월별 사용 흐름을 함께 확인하기 위한 요약 그래프입니다.
 """
     return text
@@ -982,7 +1346,7 @@ def build_report_body(info, result):
 
 def report_reference_text():
     return """
-## 6. 참고
+## 8. 참고
 이 리포트는 시간별 전력 데이터와 건물 기본정보를 바탕으로 생성된 운영 진단 결과입니다. 실제 절감액은 운영 방식, 요금제, 계절 조건에 따라 달라질 수 있습니다.
 """
 
@@ -1161,7 +1525,7 @@ def refresh_analysis():
 # ============================================================
 
 st.sidebar.title("⚡ Wattda")
-st.sidebar.caption("무료 건물 전기요금 진단 베타")
+st.sidebar.caption("무료 건물 전기요금 전문 진단 베타")
 page = st.sidebar.radio(
     "메뉴",
     [
@@ -1174,17 +1538,17 @@ page = st.sidebar.radio(
     ],
 )
 st.sidebar.divider()
-st.sidebar.caption("Wattda v0.1 Free Beta")
+st.sidebar.caption("Wattda v0.2 Professional Beta")
 
 st.markdown(
     """
     <div class="w-hero">
-        <div class="w-badge">무료 베타 | 건물 전기요금 진단 서비스</div>
+        <div class="w-badge">무료 베타 | 건물 전기요금 전문 진단 서비스</div>
         <div class="w-title-row">
             <h1>Wattda</h1>
             <div class="w-author">제작자: 소정호</div>
         </div>
-        <p>시간별 전력 데이터를 바탕으로 건물의 전기요금 낭비 요인, 피크 시간대, 예상 절감액, 개선 조치를 자동으로 분석하는 무료 베타 서비스입니다.</p>
+        <p>시간별 전력 데이터를 바탕으로 건물의 전기요금 낭비 요인, 피크 시간대, 예상 절감액, 개선 조치를 자동으로 분석하는 무료 베타 전문 진단 서비스입니다.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -1204,7 +1568,7 @@ if page == "서비스 소개":
         """
         Wattda는 건물의 시간별 전력 사용 데이터를 바탕으로
         야간 기저부하, 휴무일 전력 낭비, 냉방 민감도, 피크 시간대를 분석하고
-        예상 절감액과 개선 조치를 자동으로 제안하는 무료 베타 서비스입니다.
+        예상 절감액과 개선 조치를 자동으로 제안하는 무료 베타 전문 진단 서비스입니다.
         """
     )
 
@@ -1280,11 +1644,24 @@ if page == "서비스 소개":
                 [COL_IN, "권장", "실내온도와 쾌적성 진단"],
                 [COL_RH, "권장", "실내 습도 관리 진단"],
                 [COL_OCC, "권장", "점유 대비 전력 사용 진단"],
+                ["계약전력 kW", "권장", "계약전력 사용률과 요금 최적화 진단"],
+                ["연면적 ㎡", "필수", "전력 EUI 계산과 건물 규모 보정"],
             ],
             columns=["컬럼명", "중요도", "용도"],
         ),
         width="stretch",
         hide_index=True,
+    )
+
+    st.markdown("### 이번 버전에서 강화된 전문 진단")
+    st.markdown(
+        '''
+        - **전력 EUI**: 연면적 기준 전력 사용 성과를 계산합니다.  
+        - **부하율**: 평균 부하와 피크 부하의 관계를 통해 피크 집중도를 판단합니다.  
+        - **기저부하 비중**: 상시 가동 장비와 누설 부하 가능성을 평가합니다.  
+        - **데이터 품질 점수**: 누락, 중복, 이상치, 권장 컬럼 포함 여부를 점검합니다.  
+        - **검증 방식**: 절감액을 예비 추정치로 표시하고, 개선 전후 데이터 비교를 권장합니다.
+        '''
     )
 
 elif page == "건물 정보 입력":
@@ -1427,6 +1804,9 @@ elif page == "데이터 입력":
     st.markdown("### 현재 데이터 미리보기")
     st.dataframe(st.session_state.data.head(80), width="stretch")
 
+    preview_result = analyze(st.session_state.data, st.session_state.info)
+    render_data_quality_box(preview_result)
+
     st.download_button(
         "현재 데이터 CSV 다운로드",
         data=st.session_state.data.to_csv(index=False).encode("utf-8-sig"),
@@ -1445,6 +1825,25 @@ elif page == "진단 대시보드":
     col2.metric("진단 등급", f"{result['grade']} | {result['risk']}")
     col3.metric("월 전기요금", krw(info["월전기요금"]))
     col4.metric("평균 단가", f"{result['unit_price']:.1f}원/kWh")
+
+    kpis = professional_kpis(info, result)
+    dq = data_quality_summary(df)
+
+    st.markdown("### 전문 진단 지표")
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("전력 EUI", f"{kpis['electric_eui']:.1f} kWh/㎡·년")
+    k2.metric("부하율", pct(kpis["load_factor"]))
+    k3.metric("기저부하 비중", pct(kpis["baseload_ratio"]))
+    k4.metric("계약전력 사용률", pct(kpis["contract_utilization"]))
+    k5.metric("데이터 품질", f"{dq['score']}/100")
+
+    with st.expander("전문 지표 해석 보기"):
+        st.write(f"**부하율 해석:** {kpis['load_factor_comment']}")
+        st.write(f"**기저부하 해석:** {kpis['baseload_comment']}")
+        st.write(f"**계약전력 해석:** {kpis['contract_comment']}")
+        st.write("**절감액 해석:** 현재 절감액은 예비 추정치이며, 실제 성과는 개선 전후 데이터를 비교해 검증해야 합니다.")
+
+    render_data_quality_box(result)
 
     st.markdown("### 핵심 문제")
     for issue in core_issues(result):
@@ -1536,10 +1935,17 @@ elif page == "상세 진단":
     st.markdown(
         """
         <div class="w-summary-box">
-        상세 진단은 문제, 원인 추정, 비용 영향, 바로 할 조치, 다음 달 확인 방법 순서로 정리합니다.
+        상세 진단은 문제, 원인 추정, 비용 영향, 바로 할 조치, 필요 추가 데이터, 검증 방법 순서로 정리합니다.
         </div>
         """,
         unsafe_allow_html=True,
+    )
+
+    dq = render_data_quality_box(result)
+    st.markdown("### 절감액 검증 방식")
+    st.info(
+        "현재 절감액은 예비 추정치입니다. 실제 절감 성과는 개선 전후 최소 1개월 이상의 전력 데이터를 비교해 검증하는 것을 권장합니다. "
+        "운영스케줄 조정이나 행동개입처럼 건물 전체에 영향을 주는 조치는 건물 전체 전력 기반 검증 방식이 적합합니다."
     )
 
     for block in blocks:
@@ -1556,6 +1962,13 @@ elif page == "상세 진단":
 
 elif page == "리포트 다운로드":
     st.subheader("리포트 다운로드")
+
+    st.info(
+        '''
+        리포트에는 전력 EUI, 부하율, 기저부하 비중, 계약전력 사용률, 데이터 품질 점수, 절감액 검증 방식이 포함됩니다.
+        현재 절감액은 예비 추정치이며, 실제 성과는 개선 전후 데이터를 통해 검증해야 합니다.
+        '''
+    )
 
     st.info(
         """
@@ -1586,7 +1999,7 @@ elif page == "리포트 다운로드":
     report_monthly_summary = report_monthly.groupby("월", as_index=False)[COL_KWH].sum()
     st.bar_chart(report_monthly_summary.set_index("월")[[COL_KWH]], height=260, color="#2563EB")
 
-    st.markdown("### 6. 참고")
+    st.markdown("### 8. 참고")
     st.write("이 리포트는 시간별 전력 데이터와 건물 기본정보를 바탕으로 생성된 운영 진단 결과입니다. 실제 절감액은 운영 방식, 요금제, 계절 조건에 따라 달라질 수 있습니다.")
 
     st.divider()
