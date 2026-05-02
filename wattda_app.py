@@ -1161,23 +1161,30 @@ def refresh_analysis():
 # ============================================================
 
 st.sidebar.title("⚡ Wattda")
-st.sidebar.caption("전기요금 진단 리포트")
+st.sidebar.caption("무료 건물 전기요금 진단 MVP")
 page = st.sidebar.radio(
     "메뉴",
-    ["홈", "건물 정보", "데이터 입력", "진단 대시보드", "상세 진단", "리포트 생성"],
+    [
+        "서비스 소개",
+        "건물 정보 입력",
+        "데이터 입력",
+        "진단 대시보드",
+        "상세 진단",
+        "리포트 다운로드",
+    ],
 )
 st.sidebar.divider()
-st.sidebar.caption("Wattda v9")
+st.sidebar.caption("Wattda v0.1 Free MVP")
 
 st.markdown(
     """
     <div class="w-hero">
-        <div class="w-badge">전기요금 낭비 진단 서비스</div>
+        <div class="w-badge">무료 MVP | 건물 전기요금 진단 서비스</div>
         <div class="w-title-row">
             <h1>Wattda</h1>
             <div class="w-author">제작자: 소정호</div>
         </div>
-        <p>전기요금이 왜 많이 나왔는지, 어디서 낭비되는지, 얼마를 줄일 수 있는지 자동으로 분석합니다.</p>
+        <p>시간별 전력 데이터를 바탕으로 건물의 전기요금 낭비 요인, 피크 시간대, 예상 절감액, 개선 조치를 자동으로 분석하는 무료 MVP 서비스입니다.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -1188,33 +1195,81 @@ st.markdown(
 # Pages
 # ============================================================
 
-if page == "홈":
+if page == "서비스 소개":
     info = st.session_state.info
     result = st.session_state.result
 
-    c1, c2 = st.columns(2)
-    c1.metric("Wattda 점수", f"{result['score']}/100")
-    c2.metric("진단 등급", f"{result['grade']} | {result['risk']}")
+    st.markdown("## 전기요금이 왜 많이 나왔는지 자동으로 진단합니다")
+    st.write(
+        """
+        Wattda는 건물의 시간별 전력 사용 데이터를 바탕으로
+        야간 기저부하, 휴무일 전력 낭비, 냉방 민감도, 피크 시간대를 분석하고
+        예상 절감액과 개선 조치를 자동으로 제안하는 무료 MVP 서비스입니다.
+        """
+    )
 
-    monthly_col, annual_col = st.columns(2)
-    with monthly_col:
-        money_card("예상 월 절감액", f"{krw(result['total_saving_low'])} ~ {krw(result['total_saving_high'])}")
-    with annual_col:
-        money_card("예상 연간 절감액", f"{krw(result['total_saving_low'] * 12)} ~ {krw(result['total_saving_high'] * 12)}")
+    st.info("현재 버전은 무료 MVP입니다. 분석 결과는 예비 진단 및 테스트 목적으로 활용해 주세요.")
+    st.caption("현재 표시되는 결과는 기본 샘플 데이터를 기준으로 계산된 예시 결과입니다.")
 
-    st.markdown("### 핵심 진단")
+    st.markdown("### 무엇을 분석하나요?")
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.markdown(
+            """
+            <div class="w-card">
+                <h3>전력 낭비 탐지</h3>
+                <p class="w-muted">야간, 휴무일, 저점유 시간대의 불필요한 전력 사용을 찾습니다.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with c2:
+        st.markdown(
+            """
+            <div class="w-card">
+                <h3>피크 시간 분석</h3>
+                <p class="w-muted">전력 사용량이 가장 높은 시간대를 찾아 운영 원인을 추정합니다.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with c3:
+        st.markdown(
+            """
+            <div class="w-card">
+                <h3>절감액 추정</h3>
+                <p class="w-muted">야간 부하, 휴무일 부하, 냉방 최적화를 기준으로 절감 가능액을 계산합니다.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("### 현재 샘플 진단 결과")
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Wattda 점수", f"{result['score']}/100")
+    m2.metric("진단 등급", f"{result['grade']} | {result['risk']}")
+    m3.metric("예상 월 절감액", f"{krw(result['total_saving_low'])} ~ {krw(result['total_saving_high'])}")
+
+    st.markdown("### 사용 순서")
     st.markdown(
-        f"""
-        <div class="w-summary-box">
-        <b>{info['건물명']}</b>의 주요 이슈는 <b>{', '.join(core_issues(result))}</b>입니다.<br>
-        우선적으로는 야간 사용, 휴무일 사용, 냉방 민감도, 실내온도와 점유도 대비 사용량을 확인하는 것이 좋습니다.
-        </div>
-        """,
-        unsafe_allow_html=True,
+        """
+        1. **건물 정보 입력**에서 건물 용도, 면적, 운영시간, 전기요금을 입력합니다.  
+        2. **데이터 입력**에서 샘플 데이터를 사용하거나 CSV를 업로드합니다.  
+        3. **진단 대시보드**에서 전력 사용 패턴을 확인합니다.  
+        4. **상세 진단**에서 문제 원인과 개선 조치를 확인합니다.  
+        5. **리포트 다운로드**에서 Markdown, HTML, PDF 리포트를 저장합니다.
+        """
     )
 
     st.markdown("### 분석에 사용하는 데이터")
-    st.write("기본 분석에는 일시와 전력사용량이 필요합니다. 실외온도만 있어도 냉방 민감도 분석이 가능하지만, 진단 품질을 높이려면 실내온도, 상대습도, 점유인원을 함께 받는 것이 좋습니다.")
+    st.write(
+        "기본 분석에는 일시와 전력사용량이 필요합니다. 실외온도, 실내온도, 상대습도, 점유인원을 함께 입력하면 진단 품질이 높아집니다."
+    )
 
     st.dataframe(
         pd.DataFrame(
@@ -1232,7 +1287,7 @@ if page == "홈":
         hide_index=True,
     )
 
-elif page == "건물 정보":
+elif page == "건물 정보 입력":
     st.subheader("건물 정보 입력")
     info = st.session_state.info
 
@@ -1307,6 +1362,15 @@ elif page == "건물 정보":
 
 elif page == "데이터 입력":
     st.subheader("전력 데이터 입력")
+
+    st.info(
+        """
+        처음 사용하는 경우에는 먼저 '샘플 데이터 사용'을 선택해 전체 진단 흐름을 확인하세요.
+        실제 건물 데이터를 분석하려면 CSV 업로드를 선택하고 필수 컬럼인 일시와 전력사용량(kWh)을 포함해 주세요.
+        """
+    )
+    st.warning("현재 기본값은 샘플 데이터입니다. 실제 진단을 원하면 CSV 업로드를 사용해 주세요.")
+
     mode = st.radio("입력 방식", ["샘플 데이터 사용", "CSV 업로드"], horizontal=True)
 
     if mode == "샘플 데이터 사용":
@@ -1326,6 +1390,20 @@ elif page == "데이터 입력":
                 if not required.issubset(df.columns):
                     st.error(f"CSV에는 {COL_DT}와 {COL_KWH} 컬럼이 반드시 필요합니다.")
                 else:
+                    df[COL_DT] = pd.to_datetime(df[COL_DT], errors="coerce")
+                    df[COL_KWH] = pd.to_numeric(df[COL_KWH], errors="coerce")
+
+                    optional_numeric_cols = [COL_OUT, COL_IN, COL_RH, COL_OCC]
+                    for col in optional_numeric_cols:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+                    df = df.dropna(subset=[COL_DT, COL_KWH])
+
+                    if df.empty:
+                        st.error("유효한 일시와 전력사용량 데이터가 없습니다. CSV 날짜 형식과 숫자 형식을 확인해 주세요.")
+                        st.stop()
+
                     st.session_state.data = prepare_data(df)
                     refresh_analysis()
                     st.success("CSV 업로드가 완료되었고 진단 결과가 갱신되었습니다.")
@@ -1352,7 +1430,7 @@ elif page == "데이터 입력":
     st.download_button(
         "현재 데이터 CSV 다운로드",
         data=st.session_state.data.to_csv(index=False).encode("utf-8-sig"),
-        file_name="wattda_sample_data_v9.csv",
+        file_name="wattda_sample_data_v01.csv",
         mime="text/csv",
     )
 
@@ -1476,8 +1554,15 @@ elif page == "상세 진단":
     st.markdown("### 우선 개선 조치")
     st.dataframe(recommendations(result), width="stretch", hide_index=True)
 
-elif page == "리포트 생성":
-    st.subheader("리포트 생성")
+elif page == "리포트 다운로드":
+    st.subheader("리포트 다운로드")
+
+    st.info(
+        """
+        진단 결과를 Markdown, HTML, PDF 형식으로 저장할 수 있습니다.
+        무료 MVP 버전에서는 기본 샘플 데이터 또는 업로드한 CSV 데이터를 기준으로 리포트가 생성됩니다.
+        """
+    )
     info = st.session_state.info
     result = st.session_state.result
     md = markdown_report(info, result)
@@ -1508,7 +1593,7 @@ elif page == "리포트 생성":
     st.download_button(
         "Markdown 리포트 다운로드",
         data=md.encode("utf-8-sig"),
-        file_name="wattda_report_v9.md",
+        file_name="wattda_report_v01.md",
         mime="text/markdown",
     )
 
@@ -1516,7 +1601,7 @@ elif page == "리포트 생성":
     st.download_button(
         "HTML 리포트 다운로드",
         data=html_text.encode("utf-8-sig"),
-        file_name="wattda_report_v9.html",
+        file_name="wattda_report_v01.html",
         mime="text/html",
     )
 
@@ -1525,7 +1610,7 @@ elif page == "리포트 생성":
         st.download_button(
             "PDF 리포트 다운로드",
             data=pdf,
-            file_name="wattda_report_v9.pdf",
+            file_name="wattda_report_v01.pdf",
             mime="application/pdf",
         )
     else:
