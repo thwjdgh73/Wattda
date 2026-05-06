@@ -6,6 +6,7 @@ import io
 import os
 import html
 import base64
+import re
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
