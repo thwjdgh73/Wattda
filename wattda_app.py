@@ -349,6 +349,76 @@ st.markdown(
         line-height: 1.6;
     }
 
+
+    .w-form-section {
+        background: #FFFFFF;
+        border: 1px solid #E5E7EB;
+        border-radius: 22px;
+        padding: 18px 20px;
+        margin-bottom: 16px;
+        box-shadow: 0 8px 22px rgba(15,23,42,0.04);
+    }
+
+    .w-form-section-title {
+        font-size: 18px;
+        font-weight: 900;
+        letter-spacing: -0.02em;
+        margin-bottom: 6px;
+        color: #0F172A;
+    }
+
+    .w-form-section-desc {
+        color: #64748B;
+        font-size: 13px;
+        margin-bottom: 14px;
+        line-height: 1.55;
+    }
+
+    .w-small-note {
+        color: #64748B;
+        font-size: 13px;
+        line-height: 1.55;
+    }
+
+    .w-location-chip {
+        display: inline-block;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: #F1F5F9;
+        color: #334155;
+        font-size: 12px;
+        font-weight: 700;
+        margin-top: 6px;
+    }
+
+
+    section[data-testid="stSidebar"] div[role="radiogroup"] label {
+        background: rgba(255,255,255,0.10) !important;
+        border: 1px solid rgba(255,255,255,0.18) !important;
+        border-radius: 12px !important;
+        padding: 10px 12px !important;
+        margin: 7px 0 !important;
+    }
+
+    section[data-testid="stSidebar"] div[role="radiogroup"] label p {
+        color: #F8FAFC !important;
+        font-weight: 800 !important;
+        font-size: 14px !important;
+    }
+
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {
+        background: #FF4B4B !important;
+        border-color: #FF4B4B !important;
+    }
+
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) p {
+        color: #FFFFFF !important;
+    }
+
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:hover {
+        background: rgba(255,255,255,0.16) !important;
+    }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -903,6 +973,194 @@ def get_openweather_api_key():
         return st.secrets["OPENWEATHER_API_KEY"]
     except Exception:
         return None
+
+
+def normalize_korea_address_query(address):
+    """
+    Convert a free-text Korean address into a query string suitable for OpenWeather's
+    direct geocoding endpoint. The country suffix improves search precision for Korea.
+    """
+    address = str(address or "").strip()
+    if not address:
+        return ""
+    if "대한민국" not in address and "Korea" not in address and "South Korea" not in address:
+        address = f"{address}, KR"
+    return address
+
+
+@st.cache_data(ttl=86400)
+def fetch_geocoding_candidates(address, api_key):
+    """
+    Convert a user-entered address into candidate coordinates using OpenWeather Geocoding API.
+    Returns a list of candidate dictionaries and an optional error message.
+
+    The app still supports map clicking. Address search is an additional convenience so users
+    can enter their actual building address instead of manually finding the location.
+    """
+    if not REQUESTS_AVAILABLE:
+        return [], "requests 라이브러리가 설치되어 있지 않습니다. requirements.txt에 requests를 추가해 주세요."
+
+    if not api_key:
+        return [], "OpenWeather API key가 설정되지 않았습니다. 주소 검색과 실시간 기상정보를 사용하려면 Streamlit secrets에 OPENWEATHER_API_KEY를 추가해 주세요."
+
+    query = normalize_korea_address_query(address)
+    if not query:
+        return [], "주소를 입력해 주세요."
+
+    url = "https://api.openweathermap.org/geo/1.0/direct"
+    params = {
+        "q": query,
+        "limit": 5,
+        "appid": api_key,
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=8)
+        if response.status_code != 200:
+            return [], f"주소 검색 API 호출 실패: HTTP {response.status_code}"
+
+        data = response.json()
+        candidates = []
+        for item in data:
+            lat = item.get("lat")
+            lon = item.get("lon")
+            if lat is None or lon is None:
+                continue
+
+            country = item.get("country", "")
+            if country and country != "KR":
+                continue
+
+            local_names = item.get("local_names", {}) or {}
+            display_name = (
+                local_names.get("ko")
+                or item.get("name")
+                or local_names.get("en")
+                or str(address)
+            )
+            state = item.get("state", "")
+            label_parts = [p for p in [display_name, state, country] if p]
+            label = " / ".join(label_parts)
+
+            candidates.append({
+                "label": label,
+                "lat": float(lat),
+                "lon": float(lon),
+                "name": display_name,
+                "state": state,
+                "country": country,
+            })
+
+        if not candidates:
+            return [], "주소 검색 결과가 없습니다. 더 큰 행정구역을 포함해서 다시 입력해 주세요. 예: 서울시 강남구 테헤란로"
+
+        return candidates, None
+
+    except Exception as e:
+        return [], f"주소 검색 중 오류가 발생했습니다: {e}"
+
+
+def render_address_location_picker(info):
+    """
+    Address-first location picker:
+    1. User enters a building address.
+    2. App searches coordinates using OpenWeather Geocoding API.
+    3. Selected coordinates are used for current weather.
+    4. Map clicking remains available for manual correction.
+    """
+    st.markdown("#### 주소 기반 위치 설정")
+    st.caption("건물 주소를 입력하면 해당 위치의 좌표를 찾아 실시간 기상정보에 연결합니다. 지도에서 직접 클릭해 보정할 수도 있습니다.")
+
+    current_address = info.get("건물주소", "")
+    address = st.text_input(
+        "건물 주소",
+        value=current_address,
+        placeholder="예: 서울시 강남구 테헤란로 152",
+        help="도로명 주소나 지번 주소를 입력하세요. 주소 검색 결과가 부정확하면 지도에서 직접 위치를 클릭해 보정할 수 있습니다.",
+    )
+
+    api_key = get_openweather_api_key()
+
+    selected_city = info.get("지도기준도시", "서울")
+    selected_lat, selected_lon = clamp_korea_location(
+        info.get("위도", 37.5665),
+        info.get("경도", 126.9780),
+        selected_city,
+    )
+
+    if st.button("주소로 위치 찾기", use_container_width=True):
+        candidates, error = fetch_geocoding_candidates(address, api_key)
+        if error:
+            st.warning(error)
+            st.session_state.geocode_candidates = []
+        else:
+            st.session_state.geocode_candidates = candidates
+            st.success("주소 후보를 찾았습니다. 아래에서 가장 가까운 위치를 선택하세요.")
+
+    candidates = st.session_state.get("geocode_candidates", [])
+    if candidates:
+        labels = [c["label"] for c in candidates]
+        chosen_label = st.selectbox("주소 검색 결과", labels)
+        chosen = candidates[labels.index(chosen_label)]
+        selected_lat = chosen["lat"]
+        selected_lon = chosen["lon"]
+        selected_city = chosen.get("state") or selected_city
+        st.markdown(
+            f'<span class="w-location-chip">선택 좌표: {selected_lat:.5f}, {selected_lon:.5f}</span>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("#### 지도에서 위치 확인 및 보정")
+    st.caption("주소 검색 결과가 부정확하면 지도에서 실제 건물 위치를 클릭하세요.")
+
+    if FOLIUM_AVAILABLE:
+        map_lat, map_lon = clamp_korea_location(selected_lat, selected_lon, "서울")
+        m = folium.Map(
+            location=[map_lat, map_lon],
+            zoom_start=15,
+            tiles="CartoDB positron",
+            max_bounds=True,
+            min_lat=KOREA_BOUNDS["min_lat"],
+            max_lat=KOREA_BOUNDS["max_lat"],
+            min_lon=KOREA_BOUNDS["min_lon"],
+            max_lon=KOREA_BOUNDS["max_lon"],
+        )
+
+        folium.Marker(
+            location=[map_lat, map_lon],
+            tooltip="현재 선택 위치",
+            popup=f"현재 선택 위치: {map_lat:.5f}, {map_lon:.5f}",
+            icon=folium.Icon(color="blue", icon="home"),
+        ).add_to(m)
+
+        map_data = st_folium(
+            m,
+            height=360,
+            width=None,
+            returned_objects=["last_clicked"],
+            key="address_location_picker_map",
+        )
+
+        if map_data and map_data.get("last_clicked"):
+            clicked_lat = float(map_data["last_clicked"]["lat"])
+            clicked_lon = float(map_data["last_clicked"]["lng"])
+            if (
+                KOREA_BOUNDS["min_lat"] <= clicked_lat <= KOREA_BOUNDS["max_lat"]
+                and KOREA_BOUNDS["min_lon"] <= clicked_lon <= KOREA_BOUNDS["max_lon"]
+            ):
+                selected_lat = clicked_lat
+                selected_lon = clicked_lon
+            else:
+                st.warning("한국 영역 안의 위치를 선택해 주세요.")
+    else:
+        st.warning("지도 표시를 사용하려면 requirements.txt에 folium과 streamlit-folium을 추가해야 합니다.")
+
+    loc_cols = st.columns(2)
+    loc_cols[0].metric("선택 위도", f"{selected_lat:.5f}")
+    loc_cols[1].metric("선택 경도", f"{selected_lon:.5f}")
+
+    return address, selected_city, selected_lat, selected_lon
+
 
 
 @st.cache_data(ttl=600)
@@ -1644,6 +1902,8 @@ def build_report_body(info, result):
 
 ## 1. 요약
 건물명: {info['건물명']}
+건물 주소: {info.get('건물주소', '미입력')}
+선택 좌표: {float(info.get('위도', 37.5665)):.5f}, {float(info.get('경도', 126.9780)):.5f}
 진단 점수: {result['score']}/100
 진단 등급: {result['grade']}등급, {result['risk']}
 핵심 문제: {issues}
@@ -1841,6 +2101,7 @@ default_info = {
     "건물명": "Wattda 샘플 학원 A",
     "건물용도": "학원",
     "지역": "서울 강남구",
+    "건물주소": "서울시 강남구",
     "지도기준도시": "서울",
     "위도": 37.5665,
     "경도": 126.9780,
@@ -1883,23 +2144,13 @@ def refresh_analysis():
 # ============================================================
 
 def render_top_header():
-    """
-    Render the application header.
-
-    The previous version of the app displayed a version tag (e.g. "v0.4 Clean UI Beta") in the
-    status pill on the right-hand side of the header. For end‑users this felt like a
-    development artifact rather than a part of the product. To make the app look more
-    professional and focused on the service itself, the status pill now displays the
-    author name. If you wish to show a version internally, consider doing so in a
-    discreet caption in the sidebar or a hidden debug panel.
-    """
     st.markdown(
-        f"""
+        """
         <div class="w-app-header">
             <div>
                 <div class="w-app-kicker">Wattda Diagnostic Tool</div>
                 <h1>건물 전기요금 진단</h1>
-                <p>건물 정보와 전력 데이터를 입력하면 낭비 요인, 피크 시간대, 예상 절감액, 개선 조치를 한 번에 확인할 수 있습니다.</p>
+                <p>건물 주소, 운영정보, 전력 데이터를 입력하면 실시간 외기 조건과 함께 전기요금 낭비 요인, 피크 시간대, 예상 절감액, 개선 조치를 확인할 수 있습니다.</p>
             </div>
             <div class="w-app-status">제작자: 소정호</div>
         </div>
@@ -2072,49 +2323,121 @@ def render_report_downloads(info, result):
 
 
 def save_building_info_from_form(info):
-    col1, col2 = st.columns([1.05, 0.95])
+    st.markdown("### 건물 정보")
+    st.caption("건물의 기본 정보, 위치, 운영시간, 요금 정보를 입력하세요. 주소를 입력하면 해당 좌표를 기반으로 실시간 기상정보가 연결됩니다.")
 
-    with col1:
-        st.markdown("### 기본 정보")
-        건물명 = st.text_input("건물명", info["건물명"])
-        building_options = ["학원", "스터디카페", "피트니스센터", "병원/의원", "중소형 오피스", "상가", "기타"]
-        current_type = info["건물용도"] if info["건물용도"] in building_options else "학원"
-        건물용도 = st.selectbox("건물 용도", building_options, index=building_options.index(current_type))
-        지역 = st.text_input("지역", info["지역"])
+    with st.container():
+        st.markdown(
+            """
+            <div class="w-form-section">
+                <div class="w-form-section-title">기본 정보</div>
+                <div class="w-form-section-desc">업종별 전력 사용 특성을 구분하기 위한 기본 정보입니다.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        지도기준도시, 위도, 경도 = render_korea_city_location_picker(info)
+        b1, b2 = st.columns(2)
+        with b1:
+            건물명 = st.text_input("건물명", info["건물명"])
+        with b2:
+            building_options = [
+                "카페",
+                "음식점/식당",
+                "베이커리",
+                "편의점/소매점",
+                "학원/교육시설",
+                "스터디카페/독서실",
+                "피트니스센터",
+                "병원/의원",
+                "사무실",
+                "숙박시설",
+                "상가/복합매장",
+                "기타",
+            ]
+            current_type = info.get("건물용도", "카페")
+            old_type_map = {
+                "학원": "학원/교육시설",
+                "중소형 오피스": "사무실",
+                "상가": "상가/복합매장",
+            }
+            current_type = old_type_map.get(current_type, current_type)
+            if current_type not in building_options:
+                current_type = "카페"
+            건물용도 = st.selectbox("건물 용도", building_options, index=building_options.index(current_type))
 
-        st.markdown("### 규모 및 요금 정보")
-        연면적 = st.number_input("연면적 ㎡", min_value=10, value=int(info["연면적"]), step=10)
-        층수 = st.number_input("층수", min_value=1, value=int(info["층수"]), step=1)
-        월전기요금 = st.number_input("월 전기요금 원", min_value=0, value=int(info["월전기요금"]), step=10000)
-        월전력사용량 = st.number_input("월 전력사용량 kWh", min_value=1, value=int(info["월전력사용량"]), step=100)
-        계약전력 = st.number_input("계약전력 kW", min_value=1, value=int(info["계약전력"]), step=1)
-        요금종별 = st.selectbox("요금 종별", ["일반용 전력 갑", "일반용 전력 을", "교육용", "산업용", "기타"], index=0)
+        st.caption(
+            "주요 대상은 카페, 음식점, 소매점, 학원, 스터디카페, 병원, 사무실처럼 전력 사용 패턴이 비교적 뚜렷한 중소형 상업시설입니다."
+        )
+
+    with st.container():
+        st.markdown(
+            """
+            <div class="w-form-section">
+                <div class="w-form-section-title">위치 정보</div>
+                <div class="w-form-section-desc">건물 주소를 입력하거나 지도에서 위치를 클릭하세요. 선택 위치는 실시간 외기 조건 조회에 사용됩니다.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        지역 = st.text_input("지역", info.get("지역", "서울 강남구"))
+        건물주소, 지도기준도시, 위도, 경도 = render_address_location_picker(info)
+
+    with st.container():
+        st.markdown(
+            """
+            <div class="w-form-section">
+                <div class="w-form-section-title">규모 및 요금 정보</div>
+                <div class="w-form-section-desc">전력 EUI, 평균 단가, 계약전력 사용률 계산에 사용됩니다.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        s1, s2, s3 = st.columns(3)
+        with s1:
+            연면적 = st.number_input("연면적 ㎡", min_value=10, value=int(info["연면적"]), step=10)
+            월전기요금 = st.number_input("월 전기요금 원", min_value=0, value=int(info["월전기요금"]), step=10000)
+        with s2:
+            층수 = st.number_input("층수", min_value=1, value=int(info["층수"]), step=1)
+            월전력사용량 = st.number_input("월 전력사용량 kWh", min_value=1, value=int(info["월전력사용량"]), step=100)
+        with s3:
+            계약전력 = st.number_input("계약전력 kW", min_value=1, value=int(info["계약전력"]), step=1)
+            요금종별 = st.selectbox("요금 종별", ["일반용 전력 갑", "일반용 전력 을", "교육용", "산업용", "기타"], index=0)
+
         냉방방식 = st.selectbox("냉방 방식", ["시스템에어컨", "개별 에어컨", "중앙 냉방", "냉방 없음", "기타"], index=0)
 
-        st.markdown("### 요일별 운영시간")
-        st.caption("운영 체크 후 시작과 종료 시간을 선택하세요. 라벨을 최소화하여 한 눈에 보기 쉽도록 구성했습니다.")
+    with st.container():
+        st.markdown(
+            """
+            <div class="w-form-section">
+                <div class="w-form-section-title">요일별 운영시간</div>
+                <div class="w-form-section-desc">운영 체크 후 시작과 종료 시간을 선택하세요. 각 요일을 한 줄로 정리했습니다.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
         default_schedule = info.get("운영스케줄", {})
         schedule_inputs = {}
-        # Iterate over each day and render a single row with checkbox and time inputs.
+
         for day in ["월", "화", "수", "목", "금", "토", "일"]:
-            # Prepare defaults. If the day exists in the stored schedule, use its values.
             base_day = {
                 "운영": day in info.get("운영요일", []),
                 "시작": info.get("운영시작", time(9, 0)),
                 "종료": info.get("운영종료", time(18, 0)),
             }
             base_day.update(default_schedule.get(day, {}))
-            # Each row has a checkbox, start time and end time. Collapse labels on time inputs.
+
             r1, r2, r3 = st.columns([0.25, 0.375, 0.375])
             with r1:
-                운영 = st.checkbox(day, value=bool(base_day.get("운영", False)), key=f"op_{day}_v04")
+                운영 = st.checkbox(day, value=bool(base_day.get("운영", False)), key=f"op_{day}_v05")
             with r2:
                 시작 = st.time_input(
                     "시작",
                     value=base_day.get("시작", time(9, 0)),
-                    key=f"start_{day}_v04",
+                    key=f"start_{day}_v05",
                     disabled=not 운영,
                     label_visibility="collapsed",
                 )
@@ -2122,54 +2445,42 @@ def save_building_info_from_form(info):
                 종료 = st.time_input(
                     "종료",
                     value=base_day.get("종료", time(18, 0)),
-                    key=f"end_{day}_v04",
+                    key=f"end_{day}_v05",
                     disabled=not 운영,
                     label_visibility="collapsed",
                 )
+
             schedule_inputs[day] = {"운영": 운영, "시작": 시작, "종료": 종료}
 
         운영요일 = [day for day, setting in schedule_inputs.items() if setting["운영"]]
-        # Use the first selected day as representative start/end times for summary fields
         운영시작 = schedule_inputs[운영요일[0]]["시작"] if 운영요일 else time(9, 0)
         운영종료 = schedule_inputs[운영요일[0]]["종료"] if 운영요일 else time(18, 0)
 
-        if st.button("건물 정보 저장하고 다음 단계로", type="primary", use_container_width=True):
-            st.session_state.info = {
-                "건물명": 건물명,
-                "건물용도": 건물용도,
-                "지역": 지역,
-                "지도기준도시": 지도기준도시,
-                "위도": 위도,
-                "경도": 경도,
-                "연면적": 연면적,
-                "층수": 층수,
-                "운영요일": 운영요일,
-                "운영시작": 운영시작,
-                "운영종료": 운영종료,
-                "운영스케줄": schedule_inputs,
-                "월전기요금": 월전기요금,
-                "월전력사용량": 월전력사용량,
-                "계약전력": 계약전력,
-                "요금종별": 요금종별,
-                "냉방방식": 냉방방식,
-            }
-            refresh_analysis()
-            st.session_state.current_step = 2
-            st.success("건물 정보가 저장되었습니다.")
-            st.rerun()
-
-    with col2:
-        st.markdown("### 건물 미리보기")
-        preview_info = {
+    if st.button("건물 정보 저장하고 다음 단계로", type="primary", use_container_width=True):
+        st.session_state.info = {
             "건물명": 건물명,
             "건물용도": 건물용도,
             "지역": 지역,
+            "건물주소": 건물주소,
+            "지도기준도시": 지도기준도시,
+            "위도": 위도,
+            "경도": 경도,
             "연면적": 연면적,
             "층수": 층수,
+            "운영요일": 운영요일,
+            "운영시작": 운영시작,
+            "운영종료": 운영종료,
+            "운영스케줄": schedule_inputs,
+            "월전기요금": 월전기요금,
+            "월전력사용량": 월전력사용량,
+            "계약전력": 계약전력,
+            "요금종별": 요금종별,
+            "냉방방식": 냉방방식,
         }
-        fig = draw_building_preview_3d(preview_info)
-        st.pyplot(fig, clear_figure=True)
-        st.caption("입력한 규모를 바탕으로 생성한 단순 3D 미리보기입니다.")
+        refresh_analysis()
+        st.session_state.current_step = 2
+        st.success("건물 정보가 저장되었습니다.")
+        st.rerun()
 
 
 def render_data_input_page():
@@ -2286,27 +2597,31 @@ st.sidebar.markdown("### 진행 단계")
 
 side_steps = {
     "진단 시작": 0,
-    "1. 건물 정보": 1,
-    "2. 데이터 입력": 2,
-    "3. 진단 결과": 3,
+    "건물 정보": 1,
+    "데이터 입력": 2,
+    "진단 결과": 3,
 }
 
-# Use a radio button for navigation so that all step labels remain visible on the dark sidebar.
-# The default index reflects the current step stored in session state.
 step_labels = list(side_steps.keys())
-current_index = list(side_steps.values()).index(st.session_state.current_step)
+current_step = st.session_state.get("current_step", 0)
+if current_step not in list(side_steps.values()):
+    current_step = 0
+
+current_index = list(side_steps.values()).index(current_step)
+
 selected_label = st.sidebar.radio(
-    "",  # hide the built‑in label for a cleaner look
+    "진행 단계 선택",
     step_labels,
     index=current_index,
+    label_visibility="collapsed",
 )
-# When the user selects a different step, update session state and trigger a rerun.
-if side_steps[selected_label] != st.session_state.current_step:
-    st.session_state.current_step = side_steps[selected_label]
+
+selected_step = side_steps[selected_label]
+if selected_step != st.session_state.current_step:
+    st.session_state.current_step = selected_step
     st.rerun()
 
 st.sidebar.divider()
-# Replace the version text in the sidebar with the author name and a description.
 st.sidebar.caption("제작자: 소정호")
 st.sidebar.caption("Netlify 랜딩페이지에서 연결되는 진단 도구입니다.")
 
@@ -2330,7 +2645,7 @@ if st.session_state.current_step == 0:
             """
             <div class="w-card">
                 <h3>1. 건물 정보</h3>
-                <p class="w-muted">건물 용도, 면적, 운영시간, 요금정보, 위치를 입력합니다.</p>
+                <p class="w-muted">건물 용도, 주소, 면적, 운영시간, 요금정보를 입력합니다.</p>
             </div>
             """,
             unsafe_allow_html=True,
