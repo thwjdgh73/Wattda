@@ -1,5 +1,8 @@
 streamlit
 pandas
 numpy
-reportlab
 matplotlib
+reportlab
+requests
+folium
+streamlit-folium
