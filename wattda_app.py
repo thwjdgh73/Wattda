@@ -977,96 +977,231 @@ def get_openweather_api_key():
 
 def normalize_korea_address_query(address):
     """
-    Convert a free-text Korean address into a query string suitable for OpenWeather's
-    direct geocoding endpoint. The country suffix improves search precision for Korea.
+    Clean Korean address text for geocoding.
+    The app uses OpenStreetMap Nominatim first because detailed Korean road addresses
+    are often not resolved well by OpenWeather's direct geocoding endpoint.
     """
     address = str(address or "").strip()
-    if not address:
-        return ""
-    if "대한민국" not in address and "Korea" not in address and "South Korea" not in address:
-        address = f"{address}, KR"
+    address = re.sub(r"\s+", " ", address)
     return address
 
 
-@st.cache_data(ttl=86400)
-def fetch_geocoding_candidates(address, api_key):
+def address_fallback_queries(address):
     """
-    Convert a user-entered address into candidate coordinates using OpenWeather Geocoding API.
-    Returns a list of candidate dictionaries and an optional error message.
+    Generate progressively broader Korean address queries.
+    """
+    address = normalize_korea_address_query(address)
+    if not address:
+        return []
 
-    The app still supports map clicking. Address search is an additional convenience so users
-    can enter their actual building address instead of manually finding the location.
+    queries = [address]
+    parts = address.split()
+
+    if len(parts) >= 4:
+        queries.append(" ".join(parts[:4]))
+    if len(parts) >= 3:
+        queries.append(" ".join(parts[:3]))
+    if len(parts) >= 2:
+        queries.append(" ".join(parts[:2]))
+
+    road_tokens = []
+    for token in parts:
+        road_tokens.append(token)
+        if token.endswith(("로", "길", "대로")):
+            break
+    if len(road_tokens) >= 2:
+        queries.append(" ".join(road_tokens))
+
+    seen = set()
+    unique = []
+    for q in queries:
+        q = q.strip()
+        if q and q not in seen:
+            unique.append(q)
+            seen.add(q)
+    return unique
+
+
+def is_korea_coordinate(lat, lon):
+    try:
+        lat = float(lat)
+        lon = float(lon)
+    except Exception:
+        return False
+    return (
+        KOREA_BOUNDS["min_lat"] <= lat <= KOREA_BOUNDS["max_lat"]
+        and KOREA_BOUNDS["min_lon"] <= lon <= KOREA_BOUNDS["max_lon"]
+    )
+
+
+@st.cache_data(ttl=86400)
+def fetch_nominatim_candidates(address):
+    """
+    Search Korean addresses with OpenStreetMap Nominatim.
+    This does not require an API key. It is used only for address-to-coordinate lookup.
+    Current weather is still fetched from OpenWeather using the selected coordinates.
+    """
+    if not REQUESTS_AVAILABLE:
+        return [], "requests 라이브러리가 설치되어 있지 않습니다. requirements.txt에 requests를 추가해 주세요."
+
+    queries = address_fallback_queries(address)
+    if not queries:
+        return [], "주소를 입력해 주세요."
+
+    url = "https://nominatim.openstreetmap.org/search"
+    headers = {"User-Agent": "WattdaEnergyDiagnosis/1.0"}
+
+    all_candidates = []
+    seen = set()
+
+    for query in queries:
+        params = {
+            "q": query,
+            "format": "jsonv2",
+            "addressdetails": 1,
+            "limit": 5,
+            "countrycodes": "kr",
+        }
+
+        try:
+            response = requests.get(url, params=params, headers=headers, timeout=10)
+            if response.status_code != 200:
+                continue
+
+            data = response.json()
+            for item in data:
+                lat = item.get("lat")
+                lon = item.get("lon")
+                if not is_korea_coordinate(lat, lon):
+                    continue
+
+                key = (round(float(lat), 6), round(float(lon), 6))
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                display_name = item.get("display_name", query)
+                address_data = item.get("address", {}) or {}
+                city = (
+                    address_data.get("city")
+                    or address_data.get("town")
+                    or address_data.get("county")
+                    or address_data.get("state")
+                    or "대한민국"
+                )
+
+                all_candidates.append({
+                    "label": display_name,
+                    "lat": float(lat),
+                    "lon": float(lon),
+                    "name": display_name,
+                    "state": city,
+                    "country": "KR",
+                    "source": "OpenStreetMap",
+                })
+
+            if all_candidates:
+                break
+
+        except Exception:
+            continue
+
+    if not all_candidates:
+        return [], "주소 검색 결과가 없습니다. 도로명 전체 또는 행정구역과 도로명을 함께 입력해 주세요. 예: 서울 강남구 테헤란로"
+
+    return all_candidates, None
+
+
+@st.cache_data(ttl=86400)
+def fetch_openweather_geocoding_candidates(address, api_key):
+    """
+    Optional fallback geocoder using OpenWeather's direct geocoding endpoint.
+    This requires OPENWEATHER_API_KEY and is used only if Nominatim returns no result.
     """
     if not REQUESTS_AVAILABLE:
         return [], "requests 라이브러리가 설치되어 있지 않습니다. requirements.txt에 requests를 추가해 주세요."
 
     if not api_key:
-        return [], "OpenWeather API key가 설정되지 않았습니다. 주소 검색과 실시간 기상정보를 사용하려면 Streamlit secrets에 OPENWEATHER_API_KEY를 추가해 주세요."
+        return [], "주소 검색 결과가 없습니다. 지도에서 직접 건물 위치를 클릭해 주세요."
 
-    query = normalize_korea_address_query(address)
-    if not query:
+    queries = address_fallback_queries(address)
+    if not queries:
         return [], "주소를 입력해 주세요."
 
-    url = "https://api.openweathermap.org/geo/1.0/direct"
-    params = {
-        "q": query,
-        "limit": 5,
-        "appid": api_key,
-    }
+    candidates = []
+    seen = set()
 
-    try:
-        response = requests.get(url, params=params, timeout=8)
-        if response.status_code != 200:
-            return [], f"주소 검색 API 호출 실패: HTTP {response.status_code}"
+    for query in queries:
+        url = "https://api.openweathermap.org/geo/1.0/direct"
+        params = {"q": f"{query},KR", "limit": 5, "appid": api_key}
 
-        data = response.json()
-        candidates = []
-        for item in data:
-            lat = item.get("lat")
-            lon = item.get("lon")
-            if lat is None or lon is None:
+        try:
+            response = requests.get(url, params=params, timeout=8)
+            if response.status_code != 200:
                 continue
 
-            country = item.get("country", "")
-            if country and country != "KR":
-                continue
+            data = response.json()
+            for item in data:
+                lat = item.get("lat")
+                lon = item.get("lon")
+                if not is_korea_coordinate(lat, lon):
+                    continue
 
-            local_names = item.get("local_names", {}) or {}
-            display_name = (
-                local_names.get("ko")
-                or item.get("name")
-                or local_names.get("en")
-                or str(address)
-            )
-            state = item.get("state", "")
-            label_parts = [p for p in [display_name, state, country] if p]
-            label = " / ".join(label_parts)
+                key = (round(float(lat), 6), round(float(lon), 6))
+                if key in seen:
+                    continue
+                seen.add(key)
 
-            candidates.append({
-                "label": label,
-                "lat": float(lat),
-                "lon": float(lon),
-                "name": display_name,
-                "state": state,
-                "country": country,
-            })
+                local_names = item.get("local_names", {}) or {}
+                display_name = local_names.get("ko") or item.get("name") or local_names.get("en") or query
+                state = item.get("state", "")
+                country = item.get("country", "KR")
+                label_parts = [p for p in [display_name, state, country] if p]
+                label = " / ".join(label_parts)
 
-        if not candidates:
-            return [], "주소 검색 결과가 없습니다. 더 큰 행정구역을 포함해서 다시 입력해 주세요. 예: 서울시 강남구 테헤란로"
+                candidates.append({
+                    "label": label,
+                    "lat": float(lat),
+                    "lon": float(lon),
+                    "name": display_name,
+                    "state": state,
+                    "country": country,
+                    "source": "OpenWeather",
+                })
 
+            if candidates:
+                break
+
+        except Exception:
+            continue
+
+    if not candidates:
+        return [], "주소 검색 결과가 없습니다. 지도에서 직접 건물 위치를 클릭해 주세요."
+
+    return candidates, None
+
+
+@st.cache_data(ttl=86400)
+def fetch_geocoding_candidates(address, api_key):
+    """
+    Address search coordinator.
+    1. Try OpenStreetMap Nominatim first.
+    2. If no result, try OpenWeather geocoding as fallback.
+    """
+    candidates, error = fetch_nominatim_candidates(address)
+    if candidates:
         return candidates, None
 
-    except Exception as e:
-        return [], f"주소 검색 중 오류가 발생했습니다: {e}"
+    fallback_candidates, fallback_error = fetch_openweather_geocoding_candidates(address, api_key)
+    if fallback_candidates:
+        return fallback_candidates, None
+
+    return [], error or fallback_error
 
 
 def render_address_location_picker(info):
     """
-    Address-first location picker:
-    1. User enters a building address.
-    2. App searches coordinates using OpenWeather Geocoding API.
-    3. Selected coordinates are used for current weather.
-    4. Map clicking remains available for manual correction.
+    Address-first location picker.
     """
     st.markdown("#### 주소 기반 위치 설정")
     st.caption("건물 주소를 입력하면 해당 위치의 좌표를 찾아 실시간 기상정보에 연결합니다. 지도에서 직접 클릭해 보정할 수도 있습니다.")
@@ -1082,11 +1217,19 @@ def render_address_location_picker(info):
     api_key = get_openweather_api_key()
 
     selected_city = info.get("지도기준도시", "서울")
-    selected_lat, selected_lon = clamp_korea_location(
+    initial_lat, initial_lon = clamp_korea_location(
         info.get("위도", 37.5665),
         info.get("경도", 126.9780),
         selected_city,
     )
+
+    if "selected_location_lat" not in st.session_state:
+        st.session_state.selected_location_lat = initial_lat
+    if "selected_location_lon" not in st.session_state:
+        st.session_state.selected_location_lon = initial_lon
+
+    selected_lat = float(st.session_state.selected_location_lat)
+    selected_lon = float(st.session_state.selected_location_lon)
 
     if st.button("주소로 위치 찾기", use_container_width=True):
         candidates, error = fetch_geocoding_candidates(address, api_key)
@@ -1095,16 +1238,25 @@ def render_address_location_picker(info):
             st.session_state.geocode_candidates = []
         else:
             st.session_state.geocode_candidates = candidates
-            st.success("주소 후보를 찾았습니다. 아래에서 가장 가까운 위치를 선택하세요.")
+            first = candidates[0]
+            st.session_state.selected_location_lat = float(first["lat"])
+            st.session_state.selected_location_lon = float(first["lon"])
+            selected_lat = float(first["lat"])
+            selected_lon = float(first["lon"])
+            st.success("주소 후보를 찾았습니다. 필요하면 아래 지도에서 실제 건물 위치를 클릭해 보정하세요.")
 
     candidates = st.session_state.get("geocode_candidates", [])
     if candidates:
         labels = [c["label"] for c in candidates]
         chosen_label = st.selectbox("주소 검색 결과", labels)
         chosen = candidates[labels.index(chosen_label)]
-        selected_lat = chosen["lat"]
-        selected_lon = chosen["lon"]
+        selected_lat = float(chosen["lat"])
+        selected_lon = float(chosen["lon"])
         selected_city = chosen.get("state") or selected_city
+
+        st.session_state.selected_location_lat = selected_lat
+        st.session_state.selected_location_lon = selected_lon
+
         st.markdown(
             f'<span class="w-location-chip">선택 좌표: {selected_lat:.5f}, {selected_lon:.5f}</span>',
             unsafe_allow_html=True,
@@ -1114,10 +1266,15 @@ def render_address_location_picker(info):
     st.caption("주소 검색 결과가 부정확하면 지도에서 실제 건물 위치를 클릭하세요.")
 
     if FOLIUM_AVAILABLE:
-        map_lat, map_lon = clamp_korea_location(selected_lat, selected_lon, "서울")
+        map_lat, map_lon = clamp_korea_location(
+            st.session_state.selected_location_lat,
+            st.session_state.selected_location_lon,
+            "서울",
+        )
+
         m = folium.Map(
             location=[map_lat, map_lon],
-            zoom_start=15,
+            zoom_start=16,
             tiles="CartoDB positron",
             max_bounds=True,
             min_lat=KOREA_BOUNDS["min_lat"],
@@ -1144,23 +1301,27 @@ def render_address_location_picker(info):
         if map_data and map_data.get("last_clicked"):
             clicked_lat = float(map_data["last_clicked"]["lat"])
             clicked_lon = float(map_data["last_clicked"]["lng"])
-            if (
-                KOREA_BOUNDS["min_lat"] <= clicked_lat <= KOREA_BOUNDS["max_lat"]
-                and KOREA_BOUNDS["min_lon"] <= clicked_lon <= KOREA_BOUNDS["max_lon"]
-            ):
-                selected_lat = clicked_lat
-                selected_lon = clicked_lon
+            if is_korea_coordinate(clicked_lat, clicked_lon):
+                if (
+                    abs(clicked_lat - float(st.session_state.selected_location_lat)) > 0.000001
+                    or abs(clicked_lon - float(st.session_state.selected_location_lon)) > 0.000001
+                ):
+                    st.session_state.selected_location_lat = clicked_lat
+                    st.session_state.selected_location_lon = clicked_lon
+                    st.rerun()
             else:
                 st.warning("한국 영역 안의 위치를 선택해 주세요.")
     else:
         st.warning("지도 표시를 사용하려면 requirements.txt에 folium과 streamlit-folium을 추가해야 합니다.")
+
+    selected_lat = float(st.session_state.selected_location_lat)
+    selected_lon = float(st.session_state.selected_location_lon)
 
     loc_cols = st.columns(2)
     loc_cols[0].metric("선택 위도", f"{selected_lat:.5f}")
     loc_cols[1].metric("선택 경도", f"{selected_lon:.5f}")
 
     return address, selected_city, selected_lat, selected_lon
-
 
 
 @st.cache_data(ttl=600)
@@ -1173,7 +1334,7 @@ def fetch_current_weather(lat, lon, api_key):
         return None, "requests 라이브러리가 설치되어 있지 않습니다. requirements.txt에 requests를 추가해 주세요."
 
     if not api_key:
-        return None, "OpenWeather API key가 설정되지 않았습니다. Streamlit secrets에 OPENWEATHER_API_KEY를 추가해 주세요."
+        return None, "실시간 기상정보는 현재 준비 중입니다. 주소와 지도 위치는 저장되며, 기상 연동이 활성화되면 자동으로 현재 외기 조건을 불러옵니다."
 
     url = "https://api.openweathermap.org/data/2.5/weather"
     params = {
@@ -1219,7 +1380,7 @@ def render_current_weather_box(info):
 
     if weather_error:
         st.warning(weather_error)
-        st.caption("API key를 설정하기 전까지는 CSV의 실외온도 컬럼 또는 샘플 데이터 기준으로 진단이 진행됩니다.")
+        st.caption("기상 연동이 활성화되기 전까지는 CSV의 실외온도 컬럼 또는 샘플 데이터 기준으로 진단이 진행됩니다.")
         return None
 
     try:
@@ -2381,8 +2542,8 @@ def save_building_info_from_form(info):
             unsafe_allow_html=True,
         )
 
-        지역 = st.text_input("지역", info.get("지역", "서울 강남구"))
         건물주소, 지도기준도시, 위도, 경도 = render_address_location_picker(info)
+        지역 = 건물주소
 
     with st.container():
         st.markdown(
